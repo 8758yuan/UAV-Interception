@@ -8,7 +8,6 @@ from px4_msgs.msg import (
     VehicleLocalPosition
 )
 
-
 class OffboardTakeoff(Node):
 
     def __init__(self):
