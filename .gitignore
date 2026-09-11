@@ -1,0 +1,24 @@
+# ROS 2 / colcon build outputs
+build/
+install/
+log/
+
+# Python bytecode and tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime data and experiment outputs
+*.bag
+*.bag.active
+*.db3
+*.mcap
+results/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*~
+.DS_Store
