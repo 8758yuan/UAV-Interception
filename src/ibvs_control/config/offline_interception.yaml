@@ -1,0 +1,22 @@
+# First offline-safe candidate. Values marked tuning are not published by the
+# paper and must be revalidated against PX4/Gazebo before closed-loop use.
+controller:
+  k1: 0.05                 # tuning
+  k2: 20.0                 # tuning
+  safe_los_angle_deg: 45.0 # engineering; k_b = 1 - cos(angle)
+  mass_kg: 2.0             # model: PX4 x500_base/model.sdf
+  # Linear estimate from the P1 hover command: 2*9.80665/0.727.
+  thrust_max_n: 26.9784
+  hover_thrust_normalized: 0.727
+  omega_max_rad_s: 0.5     # engineering initial limit
+
+simulation:
+  outer_loop_hz: 50        # paper
+  inner_loop_hz: 200       # paper
+  duration_s: 40.0         # engineering
+  hit_radius_m: 0.5        # reproduction-plan definition
+  speed_limit_m_s: 2.0     # P2 initial safety limit
+  tilt_limit_deg: 20.0     # P2 initial safety limit
+  initial_p_r_e: [-12.0, -1.0, -1.0]
+  initial_v_r_e: [0.0, 0.0, 0.0]
+  camera_axis_b: [1.0, 0.0, 0.0]

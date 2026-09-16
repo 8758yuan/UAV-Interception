@@ -1,0 +1,78 @@
+body_rate_test:
+  ros__parameters:
+    use_sim_time: true
+
+    topics:
+      offboard_control_mode: /fmu/in/offboard_control_mode
+      trajectory_setpoint: /fmu/in/trajectory_setpoint
+      vehicle_command: /fmu/in/vehicle_command
+      vehicle_rates_setpoint: /fmu/in/vehicle_rates_setpoint
+      vehicle_local_position: /fmu/out/vehicle_local_position_v1
+      vehicle_status: /fmu/out/vehicle_status_v4
+      vehicle_attitude: /fmu/out/vehicle_attitude
+      vehicle_odometry: /fmu/out/vehicle_odometry
+      vehicle_land_detected: /fmu/out/vehicle_land_detected
+      vehicle_command_ack: /fmu/out/vehicle_command_ack_v1
+
+    # Publish rates at 200 Hz, matching the intended controller interface.
+    timer_period_s: 0.005
+    target_altitude_m: 2.0
+    target_yaw_rad: 0.0
+
+    prestream_duration_s: 2.0
+    command_retry_period_s: 1.0
+    init_timeout_s: 15.0
+    offboard_timeout_s: 10.0
+    arm_timeout_s: 10.0
+    takeoff_timeout_s: 30.0
+    hold_duration_s: 10.0
+    land_timeout_s: 30.0
+    telemetry_timeout_s: 1.0
+    altitude_settle_time_s: 1.0
+
+    altitude_tolerance_m: 0.15
+    vertical_speed_tolerance_m_s: 0.30
+    max_horizontal_distance_m: 3.0
+    max_relative_altitude_m: 4.0
+    min_hold_altitude_m: 0.5
+    max_tilt_deg: 20.0
+
+    # A separate test node controls when landing begins.
+    auto_land: false
+    # Write the result only after a normal landing or a safely completed abort,
+    # then exit so ros2 launch and an optional rosbag recorder can terminate.
+    stop_on_complete: true
+
+    # launch arguments override these for each acceptance trial.
+    trial_id: manual
+    results_directory: results/p1
+
+    # Calibrated from the position-controller hover segment in PX4 ULog.
+    hover_thrust: 0.727
+    # Nominal attitude change per pulse: roll/pitch 6.9 deg, yaw 10.3 deg.
+    # Two 0.8 s trials exceeded the 20 deg tilt limit after the signed roll
+    # checks, so only the pulse duration is reduced for the next trial series.
+    # Position hold after every signed pulse returns the vehicle to the hover
+    # point instead of preserving a residual tilt and accumulating drift.
+    roll_rate_rad_s: 0.30
+    pitch_rate_rad_s: 0.30
+    yaw_rate_rad_s: 0.45
+    prepare_duration_s: 2.0
+    pulse_duration_s: 0.4
+    # Each recovery lasts at least this long, then waits for all feedback gates
+    # below to remain satisfied before the next pulse begins.
+    settle_duration_s: 2.0
+    response_ignore_s: 0.15
+    minimum_response_rad_s: 0.02
+    minimum_samples: 3
+    recovery_duration_s: 2.0
+    recovery_position_tolerance_m: 0.20
+    recovery_horizontal_speed_tolerance_m_s: 0.20
+    recovery_tilt_tolerance_deg: 5.0
+    recovery_settle_time_s: 0.5
+    recovery_timeout_s: 8.0
+
+    target_system: 1
+    target_component: 1
+    source_system: 1
+    source_component: 1

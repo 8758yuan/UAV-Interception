@@ -7,12 +7,37 @@ offboard_takeoff:
       trajectory_setpoint: /fmu/in/trajectory_setpoint
       vehicle_command: /fmu/in/vehicle_command
       vehicle_local_position: /fmu/out/vehicle_local_position_v1
+      vehicle_status: /fmu/out/vehicle_status_v4
+      vehicle_attitude: /fmu/out/vehicle_attitude
+      vehicle_land_detected: /fmu/out/vehicle_land_detected
+      vehicle_command_ack: /fmu/out/vehicle_command_ack_v1
 
     timer_period_s: 0.1
     target_altitude_m: 2.0
     target_yaw_rad: 0.0
-    offboard_request_count: 20
-    arm_request_count: 25
+
+    # Feedback-driven mission timing.
+    prestream_duration_s: 2.0
+    command_retry_period_s: 1.0
+    init_timeout_s: 15.0
+    offboard_timeout_s: 10.0
+    arm_timeout_s: 10.0
+    takeoff_timeout_s: 30.0
+    hold_duration_s: 10.0
+    land_timeout_s: 30.0
+    telemetry_timeout_s: 1.0
+    altitude_settle_time_s: 1.0
+
+    # Completion tolerances and conservative P1 safety limits.
+    altitude_tolerance_m: 0.15
+    vertical_speed_tolerance_m_s: 0.30
+    max_horizontal_distance_m: 3.0
+    max_relative_altitude_m: 4.0
+    min_hold_altitude_m: 0.5
+    max_tilt_deg: 35.0
+
+    auto_land: true
+    stop_on_complete: false
 
     target_system: 1
     target_component: 1

@@ -1,0 +1,25 @@
+controller_shadow:
+  ros__parameters:
+    use_sim_time: true
+
+    # Tuning/engineering values validated only in the offline P2 baseline.
+    k1: 0.05
+    k2: 20.0
+    safe_los_angle_deg: 45.0
+    mass_kg: 2.0
+    # Linear estimate from the P1 hover command: 2*9.80665/0.727.
+    thrust_max_n: 26.9784
+    hover_thrust_normalized: 0.727
+    # Match the P2 exploratory truth-closed-loop envelope.
+    omega_max_rad_s: 0.8
+    max_command_tilt_deg: 20.0
+
+    # Paper loop rates.
+    outer_loop_hz: 50.0
+    inner_loop_hz: 200.0
+    telemetry_timeout_s: 0.2
+    camera_axis_b: [1.0, 0.0, 0.0]
+
+    relative_state_topic: /interception/truth/relative_state
+    vehicle_odometry_topic: /fmu/out/vehicle_odometry
+    debug_topic: /interception/control/debug

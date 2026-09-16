@@ -1,0 +1,18 @@
+px4_command_adapter:
+  ros__parameters:
+    use_sim_time: true
+
+    # Hard safety interlock. Keep both values unchanged until the integrated
+    # coordinator and remaining P1 acceptance trials have passed review.
+    enable_control: false
+    confirmation_token: ''
+
+    mass_kg: 2.0
+    hover_thrust_normalized: 0.727
+    # Match the P2 exploratory truth-closed-loop envelope.
+    omega_limit_rad_s: 0.8
+    command_timeout_s: 0.1
+    publish_rate_hz: 200.0
+
+    debug_topic: /interception/control/debug
+    rates_setpoint_topic: /fmu/in/vehicle_rates_setpoint

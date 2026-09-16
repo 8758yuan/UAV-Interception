@@ -1,0 +1,123 @@
+vision_interception_coordinator:
+  ros__parameters:
+    use_sim_time: true
+
+    # Explicit opt-in remains mandatory for a command-producing trial.
+    enable_flight_commands: false
+    confirmation_token: ''
+
+    topics:
+      offboard_control_mode: /fmu/in/offboard_control_mode
+      trajectory_setpoint: /fmu/in/trajectory_setpoint
+      vehicle_command: /fmu/in/vehicle_command
+      vehicle_rates_setpoint: /fmu/in/vehicle_rates_setpoint
+      vehicle_local_position: /fmu/out/vehicle_local_position_v1
+      vehicle_status: /fmu/out/vehicle_status_v4
+      vehicle_attitude: /fmu/out/vehicle_attitude
+      vehicle_odometry: /fmu/out/vehicle_odometry
+      vehicle_land_detected: /fmu/out/vehicle_land_detected
+      vehicle_command_ack: /fmu/out/vehicle_command_ack_v1
+
+    # This is the sole target observation entering the controller.
+    feature_topic: /interception/vision/raw_feature
+    debug_topic: /interception/control/debug
+
+    timer_period_s: 0.005
+    outer_loop_hz: 50.0
+    target_altitude_m: 2.0
+    target_yaw_rad: 1.57079632679
+    prestream_duration_s: 2.0
+    interception_prestream_duration_s: 0.5
+    command_retry_period_s: 1.0
+    init_timeout_s: 15.0
+    offboard_timeout_s: 10.0
+    arm_timeout_s: 10.0
+    takeoff_timeout_s: 30.0
+    hold_duration_s: 0.0
+    land_timeout_s: 30.0
+    telemetry_timeout_s: 1.0
+    altitude_settle_time_s: 1.0
+    auto_land: false
+    stop_on_complete: true
+
+    altitude_tolerance_m: 0.15
+    vertical_speed_tolerance_m_s: 0.30
+    max_horizontal_distance_m: 15.0
+    max_relative_altitude_m: 4.0
+    min_hold_altitude_m: 0.5
+    max_tilt_deg: 30.0
+
+    # Paper-style image LOS barrier and attitude realization.
+    safe_los_angle_deg: 60.0
+    los_rate_gain: 2.5
+    # Linear pixel-centering feedback complements the paper barrier term near
+    # the image centre, where the barrier contribution alone is very weak.
+    image_center_rate_gain: 1.0
+    attitude_rate_gain: 0.8
+    mass_kg: 2.0
+    thrust_max_n: 26.9784
+    hover_thrust_normalized: 0.75
+    max_command_tilt_deg: 12.0
+    omega_limit_rad_s: 0.35
+    yaw_rate_limit_rad_s: 0.25
+    rate_slew_limit_rad_s2: 1.2
+    rate_filter_time_constant_s: 0.08
+
+    # Image scale schedules approach speed.  The other feedback is only the
+    # interceptor's onboard PX4 velocity; target range is never reconstructed.
+    approach_speed_gain: 1.2
+    cruise_speed_m_s: 1.5
+    terminal_speed_m_s: 2.2
+    max_approach_acceleration_m_s2: 1.0
+    max_approach_deceleration_m_s2: 1.0
+    # Remove interceptor cross-track drift using only its onboard velocity and
+    # the camera LOS. No target velocity, range, or world position is used.
+    transverse_velocity_gain: 1.5
+    max_transverse_acceleration_m_s2: 2.0
+    vertical_velocity_gain: 2.0
+    max_vertical_correction_m_s2: 2.0
+
+    # 1280x960 image. Terminal entry uses area plus image centering and retires
+    # IBVS before the target crosses the camera plane.
+    image_area_px: 1228800.0
+    terminal_area_ratio: 0.16
+    terminal_max_center_error: 0.35
+    # Forward approach is allowed only while the camera target stays centred.
+    full_speed_image_error: 0.08
+    stop_approach_image_error: 0.30
+
+    # Camera-only acquisition. SEARCH holds position and scans relative to the
+    # current onboard yaw; ALIGN integrates pixel error into yaw/height holds.
+    visual_search_yaw_rate_rad_s: 0.20
+    visual_align_yaw_gain_rad_s: 1.2
+    visual_align_vertical_gain_m_s: 0.4
+    visual_align_center_error: 0.08
+    visual_align_release_error: 0.14
+    visual_align_settle_time_s: 0.5
+    visual_search_loss_timeout_s: 0.3
+    visual_align_max_vertical_offset_m: 0.6
+    # Fallback visual impact cue: a recently close target that abruptly leaves
+    # the red segmentation after passing/contacting the camera plane.
+    impact_loss_area_ratio: 0.04
+    impact_loss_max_center_error: 0.60
+    impact_loss_timeout_s: 0.30
+
+    mission_timeout_s: 60.0
+    interception_telemetry_timeout_s: 0.5
+    command_timeout_s: 0.1
+    speed_limit_m_s: 4.5
+    interception_tilt_limit_deg: 30.0
+    minimum_barrier_margin: 0.02
+    # Preserve the measured velocity briefly so the setpoint is continuous and
+    # the airframe clears the balloon, then use a zero-slope smooth stop.
+    post_hit_coast_duration_s: 0.20
+    stabilize_duration_s: 3.0
+    stabilize_tilt_tolerance_deg: 8.0
+    recovery_speed_tolerance_m_s: 0.35
+    recovery_settle_time_s: 1.0
+    recovery_timeout_s: 15.0
+
+    target_system: 1
+    target_component: 1
+    source_system: 1
+    source_component: 1
