@@ -10,8 +10,7 @@ import numpy as np
 
 from ibvs_control.so3_controller import (
     OuterLoopConfig,
-    attitude_rate_feedback,
-    combine_and_saturate_rates,
+    compute_inner_loop,
     compute_outer_loop,
     rodrigues,
 )
@@ -31,6 +30,7 @@ class OfflineSimulationConfig:
     initial_p_r_e: tuple = (-12.0, -1.0, -1.0)
     initial_v_r_e: tuple = (0.0, 0.0, 0.0)
     camera_axis_b: tuple = (1.0, 0.0, 0.0)
+    designed_los_pitch_deg: float = 30.0
 
     def validate(self) -> None:
         """Reject timing and safety settings unsuitable for integration."""
@@ -44,6 +44,7 @@ class OfflineSimulationConfig:
             self.speed_limit_m_s,
             self.tilt_limit_deg,
             self.omega_max_rad_s,
+            self.designed_los_pitch_deg,
         )
         if not all(math.isfinite(value) and value > 0.0 for value in positive):
             raise ValueError('duration and safety limits must be positive')
@@ -76,6 +77,10 @@ def simulate_interception(
     p_r = _vector3(simulation.initial_p_r_e, 'initial_p_r_e')
     v_r = _vector3(simulation.initial_v_r_e, 'initial_v_r_e')
     camera_axis_b = _unit3(simulation.camera_axis_b, 'camera_axis_b')
+    designed_pitch = math.radians(simulation.designed_los_pitch_deg)
+    designed_los_b = np.array(
+        (math.cos(designed_pitch), 0.0, math.sin(designed_pitch))
+    )
     attitude = np.eye(3)
     gravity = np.array((0.0, 0.0, -controller.gravity_m_s2))
     dt_s = 1.0 / simulation.inner_loop_hz
@@ -103,7 +108,7 @@ def simulate_interception(
 
         los_e = -p_r / distance_m
         if step % outer_period_steps == 0:
-            designed_los_e = attitude @ camera_axis_b
+            designed_los_e = attitude @ designed_los_b
             try:
                 outer = compute_outer_loop(
                     p_r,
@@ -119,19 +124,16 @@ def simulate_interception(
         if outer is None:
             raise RuntimeError('outer-loop state was not initialized')
 
-        omega2_b = attitude_rate_feedback(
-            outer.attitude_d_b_to_e,
+        inner = compute_inner_loop(
+            outer,
             attitude,
-        )
-        raw_rate_b = outer.omega1_b + omega2_b
-        omega_b = combine_and_saturate_rates(
-            outer.omega1_b,
-            omega2_b,
+            controller,
             simulation.omega_max_rad_s,
         )
-        if np.linalg.norm(raw_rate_b) > simulation.omega_max_rad_s:
+        omega_b = inner.omega_d_b
+        if inner.rate_saturated:
             rate_saturated_steps += 1
-        if outer.thrust_saturated:
+        if inner.thrust_saturated:
             thrust_saturated_steps += 1
 
         rate_norm = float(np.linalg.norm(omega_b))
@@ -141,7 +143,7 @@ def simulate_interception(
                 rate_norm * dt_s,
             )
         acceleration_e = gravity + (
-            outer.thrust_n / controller.mass_kg * attitude[:, 2]
+            inner.thrust_n / controller.mass_kg * attitude[:, 2]
         )
         v_r = v_r + acceleration_e * dt_s
         p_r = p_r + v_r * dt_s
@@ -186,9 +188,9 @@ def simulate_interception(
 def default_controller_config() -> OuterLoopConfig:
     """Return the first offline-safe tuning candidate, not a paper parameter."""
     return OuterLoopConfig(
-        k1=0.05,
+        k1=0.02,
         k2=20.0,
-        k_b=1.0 - math.cos(math.radians(45.0)),
+        k_b=1.0 - math.cos(math.radians(60.0)),
         mass_kg=2.0,
         thrust_max_n=26.9784,
     )

@@ -90,6 +90,71 @@ def quaternion_wxyz_to_euler(q_wxyz: Sequence[float]) -> Vector3:
     return roll, pitch, yaw
 
 
+def rotation_to_quaternion_wxyz(rotation: Sequence[float]) -> tuple:
+    """Convert a proper 3x3 rotation matrix to a Hamilton quaternion."""
+    matrix = np.asarray(rotation, dtype=float)
+    if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
+        raise ValueError('rotation must be a finite 3x3 matrix')
+    if not np.allclose(matrix.T @ matrix, np.eye(3), atol=1e-6):
+        raise ValueError('rotation must be orthonormal')
+    if not math.isclose(float(np.linalg.det(matrix)), 1.0, abs_tol=1e-6):
+        raise ValueError('rotation must have determinant +1')
+
+    trace = float(np.trace(matrix))
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        quaternion = np.array(
+            (
+                0.25 * scale,
+                (matrix[2, 1] - matrix[1, 2]) / scale,
+                (matrix[0, 2] - matrix[2, 0]) / scale,
+                (matrix[1, 0] - matrix[0, 1]) / scale,
+            )
+        )
+    else:
+        diagonal_index = int(np.argmax(np.diag(matrix)))
+        if diagonal_index == 0:
+            scale = math.sqrt(
+                1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2]
+            ) * 2.0
+            quaternion = np.array(
+                (
+                    (matrix[2, 1] - matrix[1, 2]) / scale,
+                    0.25 * scale,
+                    (matrix[0, 1] + matrix[1, 0]) / scale,
+                    (matrix[0, 2] + matrix[2, 0]) / scale,
+                )
+            )
+        elif diagonal_index == 1:
+            scale = math.sqrt(
+                1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2]
+            ) * 2.0
+            quaternion = np.array(
+                (
+                    (matrix[0, 2] - matrix[2, 0]) / scale,
+                    (matrix[0, 1] + matrix[1, 0]) / scale,
+                    0.25 * scale,
+                    (matrix[1, 2] + matrix[2, 1]) / scale,
+                )
+            )
+        else:
+            scale = math.sqrt(
+                1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1]
+            ) * 2.0
+            quaternion = np.array(
+                (
+                    (matrix[1, 0] - matrix[0, 1]) / scale,
+                    (matrix[0, 2] + matrix[2, 0]) / scale,
+                    (matrix[1, 2] + matrix[2, 1]) / scale,
+                    0.25 * scale,
+                )
+            )
+    quaternion /= np.linalg.norm(quaternion)
+    if quaternion[0] < 0.0:
+        quaternion = -quaternion
+    return tuple(float(value) for value in quaternion)
+
+
 def px4_quaternion_to_enu_flu_rotation(
     q_body_frd_to_ned_wxyz: Sequence[float],
 ) -> np.ndarray:

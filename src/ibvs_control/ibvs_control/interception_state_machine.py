@@ -6,38 +6,6 @@ import math
 from typing import Optional, Tuple
 
 
-CONTROL_CONFIRMATION_TOKEN = 'ENABLE_P2_TRUTH_CONTROL'
-
-
-def validate_activation_interlock(
-    *,
-    enabled: bool,
-    confirmation_token: str,
-    p1_pass_count: int,
-    required_p1_pass_count: int,
-    p1_gate_waived: bool = False,
-    waiver_reason: str = '',
-) -> None:
-    """Require an explicit token and completed P1 gate before activation."""
-    if not enabled:
-        return
-    if confirmation_token != CONTROL_CONFIRMATION_TOKEN:
-        raise ValueError('flight commands require the confirmation token')
-    if required_p1_pass_count < 1:
-        raise ValueError('required_p1_pass_count must be positive')
-    if p1_pass_count >= required_p1_pass_count:
-        return
-    if p1_gate_waived and waiver_reason.strip():
-        return
-    if p1_gate_waived:
-        raise ValueError('P1 gate waiver requires a documented reason')
-    if p1_pass_count < required_p1_pass_count:
-        raise ValueError(
-            f'P1 gate incomplete: {p1_pass_count}/'
-            f'{required_p1_pass_count} passing trials'
-        )
-
-
 class InterceptionPhase(str, Enum):
     """Phases controlled by the P2 interception safety gate."""
 
@@ -53,10 +21,6 @@ class InterceptionPhase(str, Enum):
     COMPLETE = 'COMPLETE'
     ABORT = 'ABORT'
 
-    # Compatibility aliases for the retired truth coordinator.
-    SUCCESS_COAST = 'EXIT_INTERCEPTION'
-    RECOVERY = 'STABILIZE'
-
 
 class InterceptionAction(str, Enum):
     """Side effects requested by one state-machine step."""
@@ -68,10 +32,6 @@ class InterceptionAction(str, Enum):
     STREAM_HOVER_SETPOINT = 'STREAM_HOVER_SETPOINT'
     REQUEST_LAND = 'REQUEST_LAND'
 
-    # Compatibility aliases for the retired truth coordinator.
-    STREAM_COAST_SETPOINT = 'STREAM_EXIT_SETPOINT'
-    STREAM_RECOVERY_SETPOINT = 'STREAM_STABILIZE_SETPOINT'
-
 
 @dataclass(frozen=True)
 class InterceptionGateConfig:
@@ -82,7 +42,6 @@ class InterceptionGateConfig:
     mission_timeout_s: float = 40.0
     telemetry_timeout_s: float = 0.2
     command_timeout_s: float = 0.1
-    hit_radius_m: float = 0.5
     speed_limit_m_s: float = 2.0
     tilt_limit_rad: float = math.radians(20.0)
     minimum_barrier_margin: float = 0.02
@@ -97,7 +56,6 @@ class InterceptionGateConfig:
             'mission_timeout_s': self.mission_timeout_s,
             'telemetry_timeout_s': self.telemetry_timeout_s,
             'command_timeout_s': self.command_timeout_s,
-            'hit_radius_m': self.hit_radius_m,
             'speed_limit_m_s': self.speed_limit_m_s,
             'tilt_limit_rad': self.tilt_limit_rad,
             'minimum_barrier_margin': self.minimum_barrier_margin,

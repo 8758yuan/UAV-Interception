@@ -11,6 +11,7 @@ from ibvs_control.frames import (
     px4_quaternion_to_enu_flu_rotation,
     quaternion_wxyz_to_euler,
     quaternion_wxyz_to_rotation,
+    rotation_to_quaternion_wxyz,
     tilt_from_body_to_ned_quaternion,
 )
 
@@ -87,3 +88,13 @@ def test_px4_yaw_zero_points_flu_forward_toward_enu_north() -> None:
         (0.0, 0.0, 1.0)
     )
     assert np.linalg.det(rotation) == pytest.approx(1.0)
+
+
+def test_rotation_to_quaternion_round_trip() -> None:
+    """Observer attitude initialization preserves a general SO(3) matrix."""
+    quaternion = np.array((0.8, 0.2, -0.3, 0.4), dtype=float)
+    quaternion /= np.linalg.norm(quaternion)
+    rotation = quaternion_wxyz_to_rotation(quaternion)
+    recovered = rotation_to_quaternion_wxyz(rotation)
+    assert recovered == pytest.approx(quaternion)
+    assert quaternion_wxyz_to_rotation(recovered) == pytest.approx(rotation)

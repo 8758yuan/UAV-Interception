@@ -7,8 +7,11 @@ from ibvs_control.so3_controller import (
     OuterLoopConfig,
     attitude_rate_feedback,
     combine_and_saturate_rates,
+    compute_inner_loop,
     compute_outer_loop,
+    image_los_in_earth,
     low_pass_rates,
+    protect_tilt_rate,
     rodrigues,
     rotation_between,
     skew,
@@ -119,6 +122,32 @@ def test_zero_time_constant_disables_rate_filter() -> None:
     )
 
 
+def test_tilt_protection_is_inactive_inside_nominal_envelope() -> None:
+    desired = np.array((0.1, -0.05, 0.02))
+    protected = protect_tilt_rate(
+        desired,
+        rodrigues((0.0, 1.0, 0.0), math.radians(8.0)),
+        math.radians(10.0),
+        math.radians(15.0),
+        0.25,
+    )
+    assert protected == pytest.approx(desired)
+
+
+def test_tilt_protection_commands_level_recovery_at_full_boundary() -> None:
+    attitude = rodrigues((0.0, 1.0, 0.0), math.radians(15.0))
+    protected = protect_tilt_rate(
+        (0.0, 0.25, 0.0),
+        attitude,
+        math.radians(10.0),
+        math.radians(15.0),
+        0.25,
+    )
+    # Positive body-Y would increase this pitch; protection must reverse it.
+    assert protected[1] < 0.0
+    assert np.linalg.norm(protected) <= 0.25 + 1e-12
+
+
 def test_thrust_is_clipped_without_changing_desired_direction() -> None:
     low_limit = OuterLoopConfig(0.1, 0.2, 0.3, 2.0, 1.0)
     result = compute_outer_loop(
@@ -132,6 +161,48 @@ def test_thrust_is_clipped_without_changing_desired_direction() -> None:
     assert result.thrust_n == 1.0
     assert result.thrust_saturated
     assert np.linalg.norm(result.thrust_direction_d_e) == pytest.approx(1.0)
+
+
+def test_vehicle_acceleration_envelope_bounds_ideal_paper_command() -> None:
+    bounded = OuterLoopConfig(
+        k1=0.1,
+        k2=0.2,
+        k_b=0.3,
+        mass_kg=2.0,
+        thrust_max_n=40.0,
+        max_acceleration_m_s2=6.0,
+        max_vertical_acceleration_m_s2=2.0,
+    )
+    result = compute_outer_loop(
+        (-20.0, 3.0, -8.0),
+        (4.0, -2.0, 3.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        np.eye(3),
+        bounded,
+    )
+    assert np.linalg.norm(result.acceleration_d_e) <= 6.0 + 1e-12
+    assert abs(result.acceleration_d_e[2]) <= 2.0
+
+
+def test_minimum_thrust_prevents_a_cut_during_interception() -> None:
+    outer = compute_outer_loop(
+        (0.0, 0.0, 10.0),
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        np.eye(3),
+        CONFIG,
+    )
+    result = compute_inner_loop(
+        outer,
+        np.eye(3),
+        CONFIG,
+        0.5,
+        minimum_thrust_n=12.0,
+    )
+    assert result.thrust_n == pytest.approx(12.0)
+    assert result.thrust_saturated
 
 
 def test_desired_thrust_direction_respects_command_tilt_limit() -> None:
@@ -158,3 +229,32 @@ def test_desired_thrust_direction_respects_command_tilt_limit() -> None:
     assert result.attitude_d_b_to_e[:, 2] == pytest.approx(
         result.thrust_direction_d_e
     )
+
+
+def test_image_los_matches_paper_equation_4_and_camera_mount() -> None:
+    camera_to_body = np.array(
+        ((0.0, 0.0, 1.0), (-1.0, 0.0, 0.0), (0.0, -1.0, 0.0))
+    )
+    los = image_los_in_earth((0.2, -0.1), np.eye(3), camera_to_body)
+    assert los == pytest.approx(
+        np.array((1.0, -0.2, 0.1)) / np.linalg.norm((1.0, -0.2, 0.1))
+    )
+
+
+def test_inner_loop_recomputes_equations_23_26_and_28() -> None:
+    outer = compute_outer_loop(
+        (-10.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        np.eye(3),
+        CONFIG,
+    )
+    current = rodrigues((0.0, 1.0, 0.0), math.radians(5.0))
+    inner = compute_inner_loop(outer, current, CONFIG, 0.1)
+    assert inner.omega2_b == pytest.approx(
+        attitude_rate_feedback(outer.attitude_d_b_to_e, current)
+    )
+    assert np.linalg.norm(inner.omega_d_b) == pytest.approx(0.1)
+    assert inner.rate_saturated
+    assert 0.0 <= inner.thrust_n <= CONFIG.thrust_max_n

@@ -35,6 +35,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'paper_moving_target = ibvs_sim.paper_moving_target:main',
             'target_contact_indicator = '
             'ibvs_sim.target_contact_indicator:main',
         ],

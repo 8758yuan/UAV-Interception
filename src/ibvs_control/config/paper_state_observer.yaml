@@ -1,0 +1,46 @@
+paper_state_observer:
+  ros__parameters:
+    use_sim_time: true
+
+    imu_topic: /fmu/out/sensor_combined
+    attitude_topic: /fmu/out/vehicle_attitude
+    feature_topic: /interception/vision/raw_feature
+    state_topic: /interception/observer/state
+    reset_topic: /interception/observer/reset
+    # Paper x(0) is established only after takeoff, target centering, and the
+    # coordinator's explicit interception reset.  Search imagery must not
+    # initialize or age the estimate before the control experiment begins.
+    require_interception_reset: true
+
+    # Paper gives x(0), P, Q, and R as observer inputs but does not publish
+    # numerical values. The initial depth is a calibrated experiment prior,
+    # so P must not tell the EKF that monocular pixel residuals may freely
+    # replace it with a many-metre range correction.
+    initial_camera_depth_m: 12.0
+    initial_v_r_e: [0.0, 0.0, 0.0]
+    initial_b_gyr_b: [0.0, 0.0, 0.0]
+    initial_b_acc_b: [0.0, 0.0, 0.0]
+
+    # Observer frames are ROS ENU earth and FLU body. Columns map the optical
+    # right-down-forward camera axes into FLU body axes.
+    gravity_e: [0.0, 0.0, -9.80665]
+    camera_to_body_rotation: [0.0, 0.0, 1.0,
+                              -1.0, 0.0, 0.0,
+                              0.0, -1.0, 0.0]
+    minimum_depth_m: 0.25
+    maximum_dt_s: 0.05
+    covariance_floor: 1.0e-12
+    # Chi-square gate for the two-dimensional current-image innovation.
+    # It prevents stale bridge frames from corrupting p_r/v_r through EKF
+    # cross-covariances while retaining the paper update for accepted frames.
+    maximum_image_innovation_nis: 9.21
+
+    initial_q_std: 0.005
+    initial_position_std_m: 0.5
+    initial_velocity_std_m_s: 0.2
+    initial_image_std: 0.02
+    initial_gyro_bias_std_rad_s: 0.005
+    initial_accel_bias_std_m_s2: 0.05
+    gyro_noise_std_rad_s: 0.015
+    accel_noise_std_m_s2: 0.15
+    image_noise_std: 0.015

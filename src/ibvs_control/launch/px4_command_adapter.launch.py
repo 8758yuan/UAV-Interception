@@ -1,4 +1,4 @@
-"""Launch the P2 PX4 adapter with its command output disabled by default."""
+"""Launch the PX4 adapter with its command output disabled by default."""
 
 from launch import LaunchDescription
 from launch.substitutions import PathJoinSubstitution

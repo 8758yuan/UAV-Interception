@@ -13,7 +13,7 @@ from ibvs_control.px4_command_adapter import adapt_rate_thrust_command
 from ibvs_control.thrust_mapping import ThrustMappingConfig
 
 
-CONFIRMATION_TOKEN = 'ENABLE_P2_TRUTH_CONTROL'
+CONFIRMATION_TOKEN = 'ENABLE_RATE_THRUST_CONTROL'
 
 
 class Px4CommandAdapterNode(Node):
@@ -65,12 +65,12 @@ class Px4CommandAdapterNode(Node):
             )
             self.create_timer(1.0 / publish_rate_hz, self._timer_callback)
             self.get_logger().warning(
-                'P2 PX4 command adapter ENABLED; external state machine '
+                'PX4 command adapter ENABLED; external state machine '
                 'must manage Offboard, arming, and landing'
             )
         else:
             self.get_logger().warning(
-                'P2 PX4 command adapter disabled; no PX4 publisher created'
+                'PX4 command adapter disabled; no PX4 publisher created'
             )
 
     def _positive(self, name: str) -> float:

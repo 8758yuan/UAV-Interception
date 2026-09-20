@@ -5,6 +5,19 @@ vision_interception_coordinator:
     # Explicit opt-in remains mandatory for a command-producing trial.
     enable_flight_commands: false
     confirmation_token: ''
+    # Static-target stabilization: after observer initialization, use only
+    # onboard PX4 displacement/velocity for p_r/v_r. No target truth is read.
+    static_target_mode: true
+    # Known experiment geometry, not a Gazebo target-state subscription.
+    # If the interceptor falls below the 3 m target, horizontal attack is
+    # paused. PX4 position mode holds x/y and climbs to 3.8 m; after settling,
+    # the paper interception controller resumes. The 0.8 m hysteresis prevents
+    # rapid switching around target height.
+    static_target_altitude_m: 3.0
+    static_altitude_recovery_margin_m: 0.8
+    static_altitude_recovery_tolerance_m: 0.10
+    static_altitude_recovery_speed_tolerance_m_s: 0.20
+    static_altitude_recovery_settle_time_s: 0.50
 
     topics:
       offboard_control_mode: /fmu/in/offboard_control_mode
@@ -18,13 +31,20 @@ vision_interception_coordinator:
       vehicle_land_detected: /fmu/out/vehicle_land_detected
       vehicle_command_ack: /fmu/out/vehicle_command_ack_v1
 
-    # This is the sole target observation entering the controller.
+    # Raw image is used for acquisition/diagnostics. The paper controller uses
+    # only the observer output below.
     feature_topic: /interception/vision/raw_feature
+    observer_topic: /interception/observer/state
+    observer_reset_topic: /interception/observer/reset
     debug_topic: /interception/control/debug
+    target_contact_topic: /interception/target/green_confirmed
 
     timer_period_s: 0.005
     outer_loop_hz: 50.0
-    target_altitude_m: 2.0
+    # The static target centre is at 3 m. Start one metre above it so the
+    # paper LOS law produces a descending collision path rather than climbing
+    # into the target from below.
+    target_altitude_m: 4.0
     target_yaw_rad: 1.57079632679
     prestream_duration_s: 2.0
     interception_prestream_duration_s: 0.5
@@ -43,51 +63,53 @@ vision_interception_coordinator:
     altitude_tolerance_m: 0.15
     vertical_speed_tolerance_m_s: 0.30
     max_horizontal_distance_m: 15.0
-    max_relative_altitude_m: 4.0
+    max_relative_altitude_m: 5.0
     min_hold_altitude_m: 0.5
     max_tilt_deg: 30.0
 
-    # Paper-style image LOS barrier and attitude realization.
+    # Paper Section III, equations (13), (19), (21)-(23), (26), and (28).
+    # The paper does not publish k1/k2; these conservative values are the
+    # deterministic static-target baseline validated in this workspace.
+    # For a static target these gains give about 2 m/s at 12 m range and then
+    # reduce speed with range.  The static controller explicitly realizes
+    # v_rd=-k1*p_r=k1*||p_r||*n_t, so transverse relative velocity is driven
+    # to zero instead of allowing the aircraft to pass beside the target.
+    paper_k1: 0.05
+    paper_k2: 8.5
     safe_los_angle_deg: 60.0
-    los_rate_gain: 2.5
-    # Linear pixel-centering feedback complements the paper barrier term near
-    # the image centre, where the barrier contribution alone is very weak.
-    image_center_rate_gain: 1.0
-    attitude_rate_gain: 0.8
+    # Negative pitch means the target stays below the interceptor. At the
+    # nominal 12 m start, -5 deg corresponds to about 1.05 m height margin.
+    designed_los_pitch_deg: -5.0
+    # Optical camera right/down/forward -> body FLU forward/left/up.
+    camera_to_body_rotation: [0.0, 0.0, 1.0,
+                              -1.0, 0.0, 0.0,
+                              0.0, -1.0, 0.0]
     mass_kg: 2.0
     thrust_max_n: 26.9784
-    hover_thrust_normalized: 0.75
-    max_command_tilt_deg: 12.0
-    omega_limit_rad_s: 0.35
-    yaw_rate_limit_rad_s: 0.25
-    rate_slew_limit_rad_s2: 1.2
-    rate_filter_time_constant_s: 0.08
+    hover_thrust_normalized: 0.727
+    max_command_tilt_deg: 8.0
+    omega_limit_rad_s: 0.20
+    # The nominal paper command remains untouched below 10 deg. If measured
+    # tilt leaves the 8 deg design cone, progressively replace it with the
+    # shortest SO(3) leveling rate; at 15 deg recovery is fully authoritative.
+    tilt_recovery_start_deg: 10.0
+    tilt_recovery_full_deg: 15.0
+    # The ideal paper acceleration is not directly realizable by this X500.
+    # Both limits use one common scale factor: saturation changes magnitude,
+    # never the direction of the paper's collinearity command.
+    max_interception_acceleration_m_s2: 2.0
+    max_interception_vertical_acceleration_m_s2: 0.6
+    minimum_interception_thrust_normalized: 0.70
+    # Rate/thrust commands are filtered at the PX4 setpoint boundary so a
+    # single noisy observer update cannot reverse the airframe in one tick.
+    interception_rate_filter_time_constant_s: 0.30
+    interception_thrust_filter_time_constant_s: 0.30
 
-    # Image scale schedules approach speed.  The other feedback is only the
-    # interceptor's onboard PX4 velocity; target range is never reconstructed.
-    approach_speed_gain: 1.2
-    cruise_speed_m_s: 1.5
-    terminal_speed_m_s: 2.2
-    max_approach_acceleration_m_s2: 1.0
-    max_approach_deceleration_m_s2: 1.0
-    # Remove interceptor cross-track drift using only its onboard velocity and
-    # the camera LOS. No target velocity, range, or world position is used.
-    transverse_velocity_gain: 1.5
-    max_transverse_acceleration_m_s2: 2.0
-    vertical_velocity_gain: 2.0
-    max_vertical_correction_m_s2: 2.0
-
-    # 1280x960 image. Terminal entry uses area plus image centering and retires
-    # IBVS before the target crosses the camera plane.
+    # 1280x960 image. Area remains diagnostic; only verified Gazebo contact
+    # plus the green-material confirmation commits the impact transition.
     image_area_px: 1228800.0
-    terminal_area_ratio: 0.16
-    terminal_max_center_error: 0.35
-    # Forward approach is allowed only while the camera target stays centred.
-    full_speed_image_error: 0.08
-    stop_approach_image_error: 0.30
-
-    # Camera-only acquisition. SEARCH holds position and scans relative to the
-    # current onboard yaw; ALIGN integrates pixel error into yaw/height holds.
+    # Camera-only acquisition. ALIGN targets the designed -5 deg LOS rather
+    # than the optical centre, preserving the above-target height margin.
     visual_search_yaw_rate_rad_s: 0.20
     visual_align_yaw_gain_rad_s: 1.2
     visual_align_vertical_gain_m_s: 0.4
@@ -96,17 +118,12 @@ vision_interception_coordinator:
     visual_align_settle_time_s: 0.5
     visual_search_loss_timeout_s: 0.3
     visual_align_max_vertical_offset_m: 0.6
-    # Fallback visual impact cue: a recently close target that abruptly leaves
-    # the red segmentation after passing/contacting the camera plane.
-    impact_loss_area_ratio: 0.04
-    impact_loss_max_center_error: 0.60
-    impact_loss_timeout_s: 0.30
 
     mission_timeout_s: 60.0
     interception_telemetry_timeout_s: 0.5
     command_timeout_s: 0.1
     speed_limit_m_s: 4.5
-    interception_tilt_limit_deg: 30.0
+    interception_tilt_limit_deg: 18.0
     minimum_barrier_margin: 0.02
     # Preserve the measured velocity briefly so the setpoint is continuous and
     # the airframe clears the balloon, then use a zero-slope smooth stop.

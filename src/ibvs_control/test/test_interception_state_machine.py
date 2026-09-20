@@ -2,14 +2,11 @@
 
 import inspect
 
-import pytest
-
 from ibvs_control.interception_state_machine import (
     InterceptionAction,
     InterceptionGateConfig,
     InterceptionPhase,
     InterceptionStateMachine,
-    validate_activation_interlock,
 )
 
 
@@ -191,66 +188,3 @@ def test_mission_timeout_ends_normally_by_requesting_land() -> None:
     assert actions == (InterceptionAction.REQUEST_LAND,)
     assert machine.phase == InterceptionPhase.LAND
     assert machine.terminal_reason == 'mission_timeout'
-
-
-def test_disabled_activation_interlock_needs_no_credentials() -> None:
-    """A disabled coordinator remains startable before the P1 gate."""
-    validate_activation_interlock(
-        enabled=False,
-        confirmation_token='',
-        p1_pass_count=0,
-        required_p1_pass_count=10,
-    )
-
-
-def test_activation_interlock_rejects_bad_token_and_incomplete_p1() -> None:
-    """Both independent activation conditions are mandatory."""
-    with pytest.raises(ValueError, match='confirmation token'):
-        validate_activation_interlock(
-            enabled=True,
-            confirmation_token='',
-            p1_pass_count=10,
-            required_p1_pass_count=10,
-        )
-    with pytest.raises(ValueError, match='2/10'):
-        validate_activation_interlock(
-            enabled=True,
-            confirmation_token='ENABLE_P2_TRUTH_CONTROL',
-            p1_pass_count=2,
-            required_p1_pass_count=10,
-        )
-
-
-def test_activation_interlock_accepts_completed_gate() -> None:
-    """Reviewed credentials permit later integration testing."""
-    validate_activation_interlock(
-        enabled=True,
-        confirmation_token='ENABLE_P2_TRUTH_CONTROL',
-        p1_pass_count=10,
-        required_p1_pass_count=10,
-    )
-
-
-def test_activation_interlock_accepts_documented_waiver() -> None:
-    """An explicit engineering waiver is distinct from fabricated evidence."""
-    validate_activation_interlock(
-        enabled=True,
-        confirmation_token='ENABLE_P2_TRUTH_CONTROL',
-        p1_pass_count=2,
-        required_p1_pass_count=10,
-        p1_gate_waived=True,
-        waiver_reason='User directed remaining P1 trials to be skipped.',
-    )
-
-
-def test_activation_interlock_rejects_undocumented_waiver() -> None:
-    """A Boolean alone cannot erase the audit trail for a bypassed gate."""
-    with pytest.raises(ValueError, match='documented reason'):
-        validate_activation_interlock(
-            enabled=True,
-            confirmation_token='ENABLE_P2_TRUTH_CONTROL',
-            p1_pass_count=2,
-            required_p1_pass_count=10,
-            p1_gate_waived=True,
-            waiver_reason=' ',
-        )

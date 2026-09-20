@@ -1,9 +1,9 @@
 # First offline-safe candidate. Values marked tuning are not published by the
 # paper and must be revalidated against PX4/Gazebo before closed-loop use.
 controller:
-  k1: 0.05                 # tuning
+  k1: 0.02                 # observer-in-loop static-target tuning
   k2: 20.0                 # tuning
-  safe_los_angle_deg: 45.0 # engineering; k_b = 1 - cos(angle)
+  safe_los_angle_deg: 60.0 # engineering; k_b = 1 - cos(angle)
   mass_kg: 2.0             # model: PX4 x500_base/model.sdf
   # Linear estimate from the P1 hover command: 2*9.80665/0.727.
   thrust_max_n: 26.9784

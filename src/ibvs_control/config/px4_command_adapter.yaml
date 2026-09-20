@@ -9,7 +9,7 @@ px4_command_adapter:
 
     mass_kg: 2.0
     hover_thrust_normalized: 0.727
-    # Match the P2 exploratory truth-closed-loop envelope.
+    # Match the validated visual-controller command envelope.
     omega_limit_rad_s: 0.8
     command_timeout_s: 0.1
     publish_rate_hz: 200.0

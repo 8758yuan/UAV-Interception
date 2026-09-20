@@ -1,15 +1,16 @@
 """Spawn the target and start the undelayed forward-camera data path."""
 
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description() -> LaunchDescription:
-    """Compose image features with an isolated evaluation sidecar."""
+    """Compose target contact feedback and image features without world state."""
     world = LaunchConfiguration('world')
     target_x = LaunchConfiguration('target_x')
     target_y = LaunchConfiguration('target_y')
@@ -23,22 +24,48 @@ def generate_launch_description() -> LaunchDescription:
         '/world/', world, '/model/', model_name,
         '/link/camera_link/sensor/camera/camera_info',
     ]
-    truth_monitor = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [
-                    FindPackageShare('ibvs_sim'),
-                    'launch',
-                    'p2_truth_monitor.launch.py',
-                ]
-            )
-        ),
-        launch_arguments={
-            'world': world,
-            'target_x': target_x,
-            'target_y': target_y,
-            'target_z': target_z,
-        }.items(),
+    target_model = os.path.join(
+        get_package_share_directory('ibvs_sim'),
+        'models',
+        'static_target.sdf',
+    )
+    clock_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='clock_bridge',
+        arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
+        output='screen',
+    )
+    contact_bridge = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        name='target_contact_bridge',
+        arguments=[
+            '/world/default/model/ibvs_target/link/target_link/sensor/'
+            'target_contact/contact@ros_gz_interfaces/msg/Contacts'
+            '[gz.msgs.Contacts',
+        ],
+        output='screen',
+    )
+    spawn_target = Node(
+        package='ros_gz_sim',
+        executable='create',
+        name='spawn_ibvs_target',
+        arguments=[
+            '-world', world,
+            '-file', target_model,
+            '-name', 'ibvs_target',
+            '-x', target_x,
+            '-y', target_y,
+            '-z', target_z,
+        ],
+        output='screen',
+    )
+    contact_indicator = Node(
+        package='ibvs_sim',
+        executable='target_contact_indicator',
+        name='target_contact_indicator',
+        output='screen',
     )
     camera_bridge = Node(
         package='ros_gz_bridge',
@@ -71,7 +98,10 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 'vehicle_model_name', default_value='x500_mono_cam_0'
             ),
-            truth_monitor,
+            clock_bridge,
+            contact_bridge,
+            spawn_target,
+            contact_indicator,
             camera_bridge,
             detector,
         ]

@@ -1,9 +1,13 @@
-"""Integrated camera-feature-only interception coordinator."""
+"""Observer-fed implementation of the paper interception controller."""
 
 import math
 from typing import Optional
 
-from interception_interfaces.msg import ControlDebug, VisionFeature
+from interception_interfaces.msg import (
+    ControlDebug,
+    ObserverState,
+    VisionFeature,
+)
 import numpy as np
 from px4_msgs.msg import (
     OffboardControlMode,
@@ -18,8 +22,8 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
+from std_msgs.msg import Bool, Empty
 
-from ibvs_control.controller_shadow import _assign_vector
 from ibvs_control.frames import (
     ned_to_enu,
     px4_quaternion_to_enu_flu_rotation,
@@ -37,7 +41,16 @@ from ibvs_control.px4_command_adapter import (
     adapt_rate_thrust_command,
 )
 from ibvs_control.post_impact_transition import smooth_stop_command
-from ibvs_control.so3_controller import low_pass_rates
+from ibvs_control.so3_controller import (
+    InnerLoopResult,
+    OuterLoopConfig,
+    OuterLoopResult,
+    compute_inner_loop,
+    compute_outer_loop,
+    image_los_in_earth,
+    low_pass_rates,
+    protect_tilt_rate,
+)
 from ibvs_control.takeoff_state_machine import FlightPhase
 from ibvs_control.thrust_mapping import ThrustMappingConfig
 from ibvs_control.visual_acquisition import (
@@ -45,20 +58,45 @@ from ibvs_control.visual_acquisition import (
     VisualAcquisitionCommand,
     VisualAcquisitionConfig,
 )
-from ibvs_control.visual_ibvs import (
-    VisualIbvsConfig,
-    VisualIbvsResult,
-    compute_visual_ibvs,
-    recent_close_target_lost,
-    terminal_visual_ready,
-)
 
 
 VISION_CONTROL_CONFIRMATION_TOKEN = 'ENABLE_VISION_ONLY_CONTROL'
 
 
+def _assign_vector(message, values) -> None:
+    """Copy a three-element iterable into a ROS Vector3 message."""
+    message.x, message.y, message.z = (float(value) for value in values)
+
+
+def _low_pass_value(
+    previous: float,
+    desired: float,
+    elapsed_s: float,
+    time_constant_s: float,
+) -> float:
+    """Apply the same first-order filter to a scalar thrust command."""
+    if not all(
+        math.isfinite(value)
+        for value in (previous, desired, elapsed_s, time_constant_s)
+    ) or elapsed_s < 0.0 or time_constant_s < 0.0:
+        raise ValueError('invalid scalar low-pass input')
+    if time_constant_s == 0.0:
+        return desired
+    if elapsed_s == 0.0:
+        return previous
+    alpha = -math.expm1(-elapsed_s / time_constant_s)
+    return previous + alpha * (desired - previous)
+
+
 class VisionInterceptionCoordinator(OffboardTakeoff):
-    """Take off and intercept from camera features plus onboard UAV state."""
+    """
+    Take off and intercept using the paper observer and Section III law.
+
+    Raw image features are used only for target acquisition and diagnostics.
+    Once interception is active, target bearing and the initial relative state
+    come from the observer. Static-target trials additionally enforce the exact
+    onboard kinematics p_r_dot=v_UAV without reading target truth.
+    """
 
     def __init__(self) -> None:
         super().__init__(
@@ -68,53 +106,96 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         )
         self._declare_visual_parameters()
         self._validate_activation()
+        self.static_target_mode = bool(
+            self.get_parameter('static_target_mode').value
+        )
+        self.static_target_altitude_m = self._float_parameter(
+            'static_target_altitude_m'
+        )
+        self.static_altitude_recovery_margin_m = self._float_parameter(
+            'static_altitude_recovery_margin_m'
+        )
+        self.static_altitude_recovery_tolerance_m = self._float_parameter(
+            'static_altitude_recovery_tolerance_m'
+        )
+        self.static_altitude_recovery_speed_tolerance_m_s = (
+            self._float_parameter(
+                'static_altitude_recovery_speed_tolerance_m_s'
+            )
+        )
+        self.static_altitude_recovery_settle_time_s = self._float_parameter(
+            'static_altitude_recovery_settle_time_s'
+        )
+        if self.static_target_altitude_m <= 0.0:
+            raise ValueError('static_target_altitude_m must be positive')
+        if self.static_altitude_recovery_margin_m <= 0.0:
+            raise ValueError(
+                'static_altitude_recovery_margin_m must be positive'
+            )
+        if not (
+            0.0 < self.static_altitude_recovery_tolerance_m
+            < self.static_altitude_recovery_margin_m
+        ):
+            raise ValueError(
+                'static altitude recovery tolerance must be positive and '
+                'smaller than its height margin'
+            )
+        if self.static_altitude_recovery_speed_tolerance_m_s <= 0.0:
+            raise ValueError(
+                'static altitude recovery speed tolerance must be positive'
+            )
+        if self.static_altitude_recovery_settle_time_s <= 0.0:
+            raise ValueError(
+                'static altitude recovery settle time must be positive'
+            )
 
         safe_angle_deg = self._float_parameter('safe_los_angle_deg')
         self.k_b = 1.0 - math.cos(math.radians(safe_angle_deg))
-        self.visual_config = VisualIbvsConfig(
+        self.paper_config = OuterLoopConfig(
+            k1=self._float_parameter('paper_k1'),
+            k2=self._float_parameter('paper_k2'),
+            k_b=self.k_b,
             mass_kg=self._float_parameter('mass_kg'),
             thrust_max_n=self._float_parameter('thrust_max_n'),
-            k_b=self.k_b,
-            los_rate_gain=self._float_parameter('los_rate_gain'),
-            image_center_rate_gain=self._float_parameter(
-                'image_center_rate_gain'
-            ),
-            attitude_rate_gain=self._float_parameter('attitude_rate_gain'),
-            speed_gain=self._float_parameter('approach_speed_gain'),
-            cruise_speed_m_s=self._float_parameter('cruise_speed_m_s'),
-            terminal_speed_m_s=self._float_parameter('terminal_speed_m_s'),
-            max_approach_acceleration_m_s2=self._float_parameter(
-                'max_approach_acceleration_m_s2'
-            ),
-            max_approach_deceleration_m_s2=self._float_parameter(
-                'max_approach_deceleration_m_s2'
-            ),
-            transverse_velocity_gain=self._float_parameter(
-                'transverse_velocity_gain'
-            ),
-            max_transverse_acceleration_m_s2=self._float_parameter(
-                'max_transverse_acceleration_m_s2'
-            ),
-            vertical_velocity_gain=self._float_parameter(
-                'vertical_velocity_gain'
-            ),
-            max_vertical_correction_m_s2=self._float_parameter(
-                'max_vertical_correction_m_s2'
-            ),
-            terminal_area_ratio=self._float_parameter(
-                'terminal_area_ratio'
-            ),
-            full_speed_image_error=self._float_parameter(
-                'full_speed_image_error'
-            ),
-            stop_approach_image_error=self._float_parameter(
-                'stop_approach_image_error'
-            ),
             max_command_tilt_rad=math.radians(
                 self._float_parameter('max_command_tilt_deg')
             ),
+            max_acceleration_m_s2=self._float_parameter(
+                'max_interception_acceleration_m_s2'
+            ),
+            max_vertical_acceleration_m_s2=self._float_parameter(
+                'max_interception_vertical_acceleration_m_s2'
+            ),
         )
-        self.visual_config.validate()
+        self.paper_config.validate()
+        camera_rotation = np.asarray(
+            self.get_parameter('camera_to_body_rotation').value,
+            dtype=float,
+        )
+        if camera_rotation.shape != (9,):
+            raise ValueError('camera_to_body_rotation must contain 9 values')
+        self.camera_to_body_rotation = camera_rotation.reshape((3, 3))
+        # The configured pitch is positive from body-forward toward body-up.
+        # A negative value places the target below the interceptor so the
+        # interception path approaches the target diagonally from above.
+        designed_pitch = math.radians(
+            self._float_parameter('designed_los_pitch_deg')
+        )
+        if not -math.pi / 2.0 < designed_pitch < math.pi / 2.0:
+            raise ValueError(
+                'designed_los_pitch_deg must be within (-90, 90)'
+            )
+        self.designed_los_b = np.array(
+            (math.cos(designed_pitch), 0.0, math.sin(designed_pitch))
+        )
+        designed_los_c = (
+            self.camera_to_body_rotation.T @ self.designed_los_b
+        )
+        if designed_los_c[2] <= 1e-6:
+            raise ValueError('designed LOS must remain in front of the camera')
+        self.designed_image_xy = (
+            designed_los_c[:2] / designed_los_c[2]
+        )
         self.acquisition = VisualAcquisition(
             VisualAcquisitionConfig(
                 search_yaw_rate_rad_s=self._float_parameter(
@@ -144,65 +225,71 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             )
         )
         self.mapping = ThrustMappingConfig(
-            mass_kg=self.visual_config.mass_kg,
+            mass_kg=self.paper_config.mass_kg,
             hover_thrust_normalized=self._float_parameter(
                 'hover_thrust_normalized'
             ),
         )
         self.mapping.validate()
-        self.image_area_px = self._float_parameter('image_area_px')
-        self.terminal_center_error = self._float_parameter(
-            'terminal_max_center_error'
+        minimum_thrust_normalized = self._float_parameter(
+            'minimum_interception_thrust_normalized'
         )
+        if not 0.0 <= minimum_thrust_normalized <= 1.0:
+            raise ValueError(
+                'minimum_interception_thrust_normalized must be within [0, 1]'
+            )
+        self.minimum_interception_thrust_n = (
+            minimum_thrust_normalized
+            * self.mapping.thrust_at_full_command_n
+        )
+        self.rate_filter_time_constant_s = self._float_parameter(
+            'interception_rate_filter_time_constant_s'
+        )
+        self.thrust_filter_time_constant_s = self._float_parameter(
+            'interception_thrust_filter_time_constant_s'
+        )
+        if self.rate_filter_time_constant_s < 0.0:
+            raise ValueError(
+                'interception_rate_filter_time_constant_s must be nonnegative'
+            )
+        if self.thrust_filter_time_constant_s < 0.0:
+            raise ValueError(
+                'interception_thrust_filter_time_constant_s must be '
+                'nonnegative'
+            )
+        self.image_area_px = self._float_parameter('image_area_px')
         self.stabilize_duration_s = self._float_parameter(
             'stabilize_duration_s'
         )
         self.stabilize_tilt_tolerance_rad = math.radians(
             self._float_parameter('stabilize_tilt_tolerance_deg')
         )
-        self.impact_loss_area_ratio = self._float_parameter(
-            'impact_loss_area_ratio'
-        )
-        self.impact_loss_center_error = self._float_parameter(
-            'impact_loss_max_center_error'
-        )
-        self.impact_loss_timeout_s = self._float_parameter(
-            'impact_loss_timeout_s'
-        )
         if self.image_area_px <= 0.0:
             raise ValueError('image_area_px must be positive')
-        if self.terminal_center_error <= 0.0:
-            raise ValueError('terminal_max_center_error must be positive')
         if self.stabilize_duration_s <= 0.0:
             raise ValueError('stabilize_duration_s must be positive')
         if not 0.0 < self.stabilize_tilt_tolerance_rad < math.pi / 2.0:
             raise ValueError('stabilize tilt tolerance must be within (0, 90)')
-        if not 0.0 < self.impact_loss_area_ratio < 1.0:
-            raise ValueError('impact loss area ratio must be within (0, 1)')
-        if self.impact_loss_center_error <= 0.0:
-            raise ValueError('impact loss center error must be positive')
-        if self.impact_loss_timeout_s <= 0.0:
-            raise ValueError('impact loss timeout must be positive')
 
         self.omega_limit_rad_s = self._float_parameter(
             'omega_limit_rad_s'
         )
-        self.yaw_rate_limit_rad_s = self._float_parameter(
-            'yaw_rate_limit_rad_s'
+        self.tilt_recovery_start_rad = math.radians(
+            self._float_parameter('tilt_recovery_start_deg')
         )
-        self.rate_slew_limit_rad_s2 = self._float_parameter(
-            'rate_slew_limit_rad_s2'
+        self.tilt_recovery_full_rad = math.radians(
+            self._float_parameter('tilt_recovery_full_deg')
         )
-        self.rate_filter_time_constant_s = self._float_parameter(
-            'rate_filter_time_constant_s'
-        )
-        if not 0.0 < self.yaw_rate_limit_rad_s <= self.omega_limit_rad_s:
-            raise ValueError('yaw rate limit must be within the total rate limit')
-        if self.rate_slew_limit_rad_s2 <= 0.0:
-            raise ValueError('rate_slew_limit_rad_s2 must be positive')
-        if self.rate_filter_time_constant_s < 0.0:
-            raise ValueError('rate_filter_time_constant_s must be nonnegative')
-
+        if not (
+            self.paper_config.max_command_tilt_rad
+            < self.tilt_recovery_start_rad
+            < self.tilt_recovery_full_rad
+            < math.pi / 2.0
+        ):
+            raise ValueError(
+                'tilt limits must satisfy command < recovery start < '
+                'recovery full < 90 deg'
+            )
         self.gate = InterceptionStateMachine(
             InterceptionGateConfig(
                 enable_control=self.command_output_enabled,
@@ -238,15 +325,17 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.last_valid_feature: Optional[VisionFeature] = None
         self.last_valid_feature_received_ns: Optional[int] = None
         self.target_detected = False
+        self.contact_confirmed = False
+        self.observer_state: Optional[ObserverState] = None
         self.odometry: Optional[VehicleOdometry] = None
         self.feature_received_ns: Optional[int] = None
+        self.observer_received_ns: Optional[int] = None
         self.odometry_received_ns: Optional[int] = None
-        self.visual_result: Optional[VisualIbvsResult] = None
+        self.visual_result: Optional[OuterLoopResult] = None
+        self.inner_result: Optional[InnerLoopResult] = None
         self.px4_command: Optional[Px4RateThrustCommand] = None
         self.command_computed_ns: Optional[int] = None
         self.control_reason = 'waiting_for_camera_feature'
-        self.filtered_omega_b = np.zeros(3)
-        self.last_rate_update_ns: Optional[int] = None
         self.last_outer_ns: Optional[int] = None
         self.outer_period_ns = int(
             1e9 / self._float_parameter('outer_loop_hz')
@@ -255,6 +344,13 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.vehicle_speed_m_s = 1e9
         self.vehicle_velocity_ned: Optional[np.ndarray] = None
         self.vehicle_heading_ned_rad: Optional[float] = None
+        self._static_initial_p_r_e: Optional[np.ndarray] = None
+        self._static_reference_position_ned: Optional[np.ndarray] = None
+        self._static_altitude_recovery_active = False
+        self._static_altitude_recovery_x_ned: Optional[float] = None
+        self._static_altitude_recovery_y_ned: Optional[float] = None
+        self._static_altitude_recovery_yaw_ned: Optional[float] = None
+        self._static_altitude_recovery_ready_since_s: Optional[float] = None
         self.terminal_started_s: Optional[float] = None
         self.visual_interception_complete = False
         self.coast_velocity_ned: Optional[np.ndarray] = None
@@ -269,6 +365,11 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.commanded_velocity_ned = np.full(3, math.nan)
         self.commanded_acceleration_ned = np.full(3, math.nan)
         self.commanded_thrust_normalized = math.nan
+        self._filtered_omega_b = np.zeros(3)
+        self._filtered_thrust_n = (
+            self.paper_config.mass_kg * self.paper_config.gravity_m_s2
+        )
+        self._filter_last_ns: Optional[int] = None
         self.acquisition_command: Optional[VisualAcquisitionCommand] = None
         self.last_acquisition_phase = self.acquisition.phase
 
@@ -283,6 +384,11 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             str(self.get_parameter('debug_topic').value),
             10,
         )
+        self.observer_reset_pub = self.create_publisher(
+            Empty,
+            str(self.get_parameter('observer_reset_topic').value),
+            10,
+        )
         self.create_subscription(
             VisionFeature,
             str(self.get_parameter('feature_topic').value),
@@ -290,10 +396,22 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             qos,
         )
         self.create_subscription(
+            ObserverState,
+            str(self.get_parameter('observer_topic').value),
+            self._observer_callback,
+            qos,
+        )
+        self.create_subscription(
             VehicleOdometry,
             str(self.get_parameter('topics.vehicle_odometry').value),
             self._odometry_callback,
             qos,
+        )
+        self.create_subscription(
+            Bool,
+            str(self.get_parameter('target_contact_topic').value),
+            self._contact_callback,
+            10,
         )
         self.rates_pub = None
         if self.command_output_enabled:
@@ -303,7 +421,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 qos,
             )
             self.get_logger().warning(
-                'VISION-ONLY interception enabled; target-state inputs absent'
+                'Paper observer/controller enabled; target truth inputs absent'
             )
         else:
             self.get_logger().warning(
@@ -312,8 +430,38 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
 
     def _declare_visual_parameters(self) -> None:
         self.declare_parameter('confirmation_token', '')
-        self.declare_parameter('feature_topic', '/interception/vision/raw_feature')
+        self.declare_parameter('static_target_mode', False)
+        # Static-target experiments know the target height, but never read its
+        # Gazebo pose.  If the interceptor falls below this height, pause the
+        # attack, climb stably above it, and only then resume interception.
+        self.declare_parameter('static_target_altitude_m', 3.0)
+        self.declare_parameter('static_altitude_recovery_margin_m', 0.8)
+        self.declare_parameter('static_altitude_recovery_tolerance_m', 0.10)
+        self.declare_parameter(
+            'static_altitude_recovery_speed_tolerance_m_s',
+            0.20,
+        )
+        self.declare_parameter(
+            'static_altitude_recovery_settle_time_s',
+            0.50,
+        )
+        self.declare_parameter(
+            'feature_topic',
+            '/interception/vision/raw_feature',
+        )
+        self.declare_parameter(
+            'observer_topic',
+            '/interception/observer/state',
+        )
+        self.declare_parameter(
+            'observer_reset_topic',
+            '/interception/observer/reset',
+        )
         self.declare_parameter('debug_topic', '/interception/control/debug')
+        self.declare_parameter(
+            'target_contact_topic',
+            '/interception/target/green_confirmed',
+        )
         self.declare_parameter(
             'topics.vehicle_rates_setpoint',
             '/fmu/in/vehicle_rates_setpoint',
@@ -326,24 +474,38 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('thrust_max_n', 26.9784)
         self.declare_parameter('hover_thrust_normalized', 0.75)
         self.declare_parameter('safe_los_angle_deg', 60.0)
-        self.declare_parameter('los_rate_gain', 2.5)
-        self.declare_parameter('image_center_rate_gain', 1.0)
-        self.declare_parameter('attitude_rate_gain', 0.8)
-        self.declare_parameter('approach_speed_gain', 1.2)
-        self.declare_parameter('cruise_speed_m_s', 1.5)
-        self.declare_parameter('terminal_speed_m_s', 2.2)
-        self.declare_parameter('max_approach_acceleration_m_s2', 1.0)
-        self.declare_parameter('max_approach_deceleration_m_s2', 1.0)
-        self.declare_parameter('transverse_velocity_gain', 1.5)
-        self.declare_parameter('max_transverse_acceleration_m_s2', 2.0)
-        self.declare_parameter('vertical_velocity_gain', 2.0)
-        self.declare_parameter('max_vertical_correction_m_s2', 2.0)
-        self.declare_parameter('max_command_tilt_deg', 12.0)
+        self.declare_parameter('paper_k1', 0.05)
+        self.declare_parameter('paper_k2', 8.5)
+        self.declare_parameter('designed_los_pitch_deg', -5.0)
+        self.declare_parameter(
+            'camera_to_body_rotation',
+            [
+                0.0, 0.0, 1.0,
+                -1.0, 0.0, 0.0,
+                0.0, -1.0, 0.0,
+            ],
+        )
+        self.declare_parameter('max_command_tilt_deg', 8.0)
+        # The paper controller is an ideal acceleration law.  These limits
+        # make its command realizable by the simulated X500 airframe.
+        self.declare_parameter('max_interception_acceleration_m_s2', 2.0)
+        self.declare_parameter(
+            'max_interception_vertical_acceleration_m_s2',
+            0.6,
+        )
+        self.declare_parameter(
+            'minimum_interception_thrust_normalized',
+            0.70,
+        )
+        self.declare_parameter(
+            'interception_rate_filter_time_constant_s',
+            0.30,
+        )
+        self.declare_parameter(
+            'interception_thrust_filter_time_constant_s',
+            0.30,
+        )
         self.declare_parameter('image_area_px', 1228800.0)
-        self.declare_parameter('terminal_area_ratio', 0.16)
-        self.declare_parameter('terminal_max_center_error', 0.35)
-        self.declare_parameter('full_speed_image_error', 0.08)
-        self.declare_parameter('stop_approach_image_error', 0.30)
         self.declare_parameter('visual_search_yaw_rate_rad_s', 0.20)
         self.declare_parameter('visual_align_yaw_gain_rad_s', 1.2)
         self.declare_parameter('visual_align_vertical_gain_m_s', 0.4)
@@ -352,20 +514,16 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('visual_align_settle_time_s', 0.5)
         self.declare_parameter('visual_search_loss_timeout_s', 0.3)
         self.declare_parameter('visual_align_max_vertical_offset_m', 0.6)
-        self.declare_parameter('impact_loss_area_ratio', 0.04)
-        self.declare_parameter('impact_loss_max_center_error', 0.60)
-        self.declare_parameter('impact_loss_timeout_s', 0.30)
-        self.declare_parameter('omega_limit_rad_s', 0.35)
-        self.declare_parameter('yaw_rate_limit_rad_s', 0.25)
-        self.declare_parameter('rate_slew_limit_rad_s2', 1.2)
-        self.declare_parameter('rate_filter_time_constant_s', 0.08)
+        self.declare_parameter('omega_limit_rad_s', 0.20)
+        self.declare_parameter('tilt_recovery_start_deg', 10.0)
+        self.declare_parameter('tilt_recovery_full_deg', 15.0)
         self.declare_parameter('outer_loop_hz', 50.0)
         self.declare_parameter('interception_prestream_duration_s', 1.0)
         self.declare_parameter('mission_timeout_s', 60.0)
         self.declare_parameter('interception_telemetry_timeout_s', 0.5)
         self.declare_parameter('command_timeout_s', 0.1)
         self.declare_parameter('speed_limit_m_s', 4.5)
-        self.declare_parameter('interception_tilt_limit_deg', 30.0)
+        self.declare_parameter('interception_tilt_limit_deg', 18.0)
         self.declare_parameter('minimum_barrier_margin', 0.02)
         self.declare_parameter('post_hit_coast_duration_s', 0.20)
         self.declare_parameter('stabilize_duration_s', 3.0)
@@ -394,14 +552,38 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         if not message.valid and self.terminal_started_s is None:
             self.control_reason = 'camera_target_not_detected'
 
+    def _observer_callback(self, message: ObserverState) -> None:
+        """Accept the sole state input used by the paper controller."""
+        self.observer_received_ns = self.get_clock().now().nanoseconds
+        if message.initialized and message.valid:
+            self.observer_state = message
+        elif self.static_target_mode and self.observer_state is not None:
+            # Once p_r(0) is latched, a static target uses onboard displacement
+            # and velocity. Keep the last valid observer seed if its monocular
+            # range later becomes invalid; current pixels still drive LOS.
+            self.control_reason = message.reason or 'observer_invalid'
+        else:
+            self.observer_state = None
+            self.control_reason = message.reason or 'observer_invalid'
+
     def _odometry_callback(self, message: VehicleOdometry) -> None:
         self.odometry = message
         self.odometry_received_ns = self.get_clock().now().nanoseconds
 
+    def _contact_callback(self, message: Bool) -> None:
+        if message.data:
+            self.contact_confirmed = True
+            self.get_logger().warning(
+                'Gazebo target contact confirmed; committing visual impact'
+            )
+
     def position_callback(self, message: VehicleLocalPosition) -> None:
         """Track only the interceptor's own safety and recovery state."""
         super().position_callback(message)
-        velocity = np.asarray((message.vx, message.vy, message.vz), dtype=float)
+        velocity = np.asarray(
+            (message.vx, message.vy, message.vz),
+            dtype=float,
+        )
         valid = bool(
             getattr(message, 'v_xy_valid', True)
             and message.v_z_valid
@@ -419,6 +601,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
     def timer_callback(self) -> None:
         now_ns = self.get_clock().now().nanoseconds
         now_s = now_ns * 1e-9
+        self._update_static_altitude_recovery(now_s)
         recovering = self.gate.phase in (
             InterceptionPhase.IMPACT_DETECTED,
             InterceptionPhase.EXIT_INTERCEPTION,
@@ -427,8 +610,14 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         )
         if recovering:
             self.visual_result = None
+            self.inner_result = None
             self.px4_command = None
             self.control_reason = 'recovery_active'
+        elif self._static_altitude_recovery_active:
+            self.visual_result = None
+            self.inner_result = None
+            self.px4_command = None
+            self.control_reason = 'static_altitude_recovery'
         else:
             self._update_control(now_ns)
         if not self.command_output_enabled:
@@ -439,124 +628,292 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self._publish_debug()
 
     def _update_control(self, now_ns: int) -> None:
-        if (
-            self.last_outer_ns is not None
-            and now_ns - self.last_outer_ns < self.outer_period_ns
-        ):
-            return
-        self.last_outer_ns = now_ns
-        feature = self.feature
-        odometry = self.odometry
-        if feature is None or odometry is None:
-            self.visual_result = None
-            self.px4_command = None
-            return
-        try:
-            attitude = px4_quaternion_to_enu_flu_rotation(odometry.q)
-            velocity_e = ned_to_enu(odometry.velocity)
-            area_ratio = float(feature.area_px) / self.image_area_px
-            result = compute_visual_ibvs(
-                float(feature.x_norm),
-                float(feature.y_norm),
-                area_ratio,
-                attitude,
-                velocity_e,
-                self.visual_config,
+        observer = self.observer_state
+        paper_result: Optional[OuterLoopResult] = None
+        paper_inner: Optional[InnerLoopResult] = None
+
+        # Algorithm 1 takes target relative state from the observer and the
+        # interceptor's current R_b^e from onboard attitude telemetry.
+        if observer is not None and self.odometry is not None:
+            try:
+                vehicle_attitude = px4_quaternion_to_enu_flu_rotation(
+                    self.odometry.q
+                )
+                p_r_e, v_r_e, image_xy = self._controller_state(observer)
+                outer_due = bool(
+                    self.visual_result is None
+                    or self.last_outer_ns is None
+                    or now_ns - self.last_outer_ns >= self.outer_period_ns
+                )
+                if outer_due:
+                    los_e = image_los_in_earth(
+                        image_xy,
+                        vehicle_attitude,
+                        self.camera_to_body_rotation,
+                    )
+                    designed_los_e = vehicle_attitude @ self.designed_los_b
+                    if self.static_target_mode:
+                        # The paper uses the geometric identity
+                        #
+                        #   -p_r = ||p_r|| n_t,
+                        #   v_rd = -k1 p_r = k1 ||p_r|| n_t.
+                        #
+                        # A monocular depth prior integrated with odometry can
+                        # retain a useful range while its direction gradually
+                        # disagrees with the directly observed LOS.  Feeding
+                        # that stale direction to z2 makes the vehicle track a
+                        # point beside the visible target.  Project the range
+                        # estimate back onto the current image LOS so the
+                        # paper's position, LOS and desired-velocity vectors
+                        # remain collinear by construction.
+                        relative_range_m = float(np.linalg.norm(p_r_e))
+                        p_r_e = -relative_range_m * los_e
+                    paper_result = compute_outer_loop(
+                        p_r_e,
+                        v_r_e,
+                        los_e,
+                        designed_los_e,
+                        vehicle_attitude,
+                        self.paper_config,
+                    )
+                    self.last_outer_ns = now_ns
+                else:
+                    paper_result = self.visual_result
+                if paper_result is not None:
+                    paper_inner = compute_inner_loop(
+                        paper_result,
+                        vehicle_attitude,
+                        self.paper_config,
+                        self.omega_limit_rad_s,
+                        minimum_thrust_n=self.minimum_interception_thrust_n,
+                    )
+            except (TypeError, ValueError) as error:
+                self.control_reason = f'paper_observer_invalid: {error}'
+
+        if paper_inner is not None:
+            desired_rates = protect_tilt_rate(
+                paper_inner.omega_d_b,
+                vehicle_attitude,
+                self.tilt_recovery_start_rad,
+                self.tilt_recovery_full_rad,
+                self.omega_limit_rad_s,
             )
-            omega = self._bounded_rates(result.omega_d_b, now_ns)
+            desired_thrust_n = paper_inner.thrust_n
+            success_reason = (
+                'ok_paper_static_los_velocity_collinear'
+                if self.static_target_mode
+                else 'ok_paper_observer_control'
+            )
+        else:
+            self.visual_result = paper_result
+            self.inner_result = paper_inner
+            self.px4_command = None
+            self.command_computed_ns = None
+            return
+
+        rate_norm = float(np.linalg.norm(desired_rates))
+        if rate_norm > self.omega_limit_rad_s:
+            desired_rates = desired_rates * (
+                self.omega_limit_rad_s / rate_norm
+            )
+        elapsed_s = 0.0
+        if self._filter_last_ns is not None:
+            elapsed_s = max(0.0, (now_ns - self._filter_last_ns) * 1e-9)
+        self._filtered_omega_b = low_pass_rates(
+            self._filtered_omega_b,
+            desired_rates,
+            elapsed_s,
+            self.rate_filter_time_constant_s,
+        )
+        self._filtered_thrust_n = _low_pass_value(
+            self._filtered_thrust_n,
+            desired_thrust_n,
+            elapsed_s,
+            self.thrust_filter_time_constant_s,
+        )
+        self._filter_last_ns = now_ns
+        try:
             command = adapt_rate_thrust_command(
-                omega,
-                result.thrust_n,
+                self._filtered_omega_b,
+                self._filtered_thrust_n,
                 self.omega_limit_rad_s,
                 self.mapping,
             )
         except (TypeError, ValueError) as error:
-            self.visual_result = None
+            self.visual_result = paper_result
+            self.inner_result = paper_inner
             self.px4_command = None
+            self.command_computed_ns = None
             self.control_reason = str(error)
             return
-        self.visual_result = result
+        self.visual_result = paper_result
+        self.inner_result = paper_inner
         self.px4_command = command
         self.command_computed_ns = now_ns
-        self.control_reason = 'ok'
+        self.control_reason = success_reason
 
-    def _bounded_rates(self, desired: np.ndarray, now_ns: int) -> np.ndarray:
-        desired = np.asarray(desired, dtype=float).copy()
-        desired[2] = float(np.clip(
-            desired[2],
-            -self.yaw_rate_limit_rad_s,
-            self.yaw_rate_limit_rad_s,
-        ))
-        norm = float(np.linalg.norm(desired))
-        if norm > self.omega_limit_rad_s:
-            desired *= self.omega_limit_rad_s / norm
-        previous_ns = self.last_rate_update_ns
-        self.last_rate_update_ns = now_ns
-        if previous_ns is None:
-            self.filtered_omega_b = desired
-            return desired.copy()
-        elapsed_s = max(0.0, (now_ns - previous_ns) * 1e-9)
-        smoothed = low_pass_rates(
-            self.filtered_omega_b,
-            desired,
-            elapsed_s,
-            self.rate_filter_time_constant_s,
+    def _controller_state(
+        self,
+        observer: ObserverState,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return paper p_r, v_r, and image state for the active scenario."""
+        observer_p = np.asarray(
+            (observer.p_r.x, observer.p_r.y, observer.p_r.z),
+            dtype=float,
         )
-        delta = smoothed - self.filtered_omega_b
-        maximum_change = self.rate_slew_limit_rad_s2 * elapsed_s
-        delta_norm = float(np.linalg.norm(delta))
-        if delta_norm > maximum_change and delta_norm > 1e-12:
-            delta *= maximum_change / delta_norm
-        self.filtered_omega_b = self.filtered_omega_b + delta
-        return self.filtered_omega_b.copy()
+        observer_v = np.asarray(
+            (observer.v_r.x, observer.v_r.y, observer.v_r.z),
+            dtype=float,
+        )
+        observer_image = np.asarray(observer.image_xy, dtype=float)
+        if not self.static_target_mode:
+            return observer_p, observer_v, observer_image
 
-    def _update_visual_terminal(self, now_s: float) -> None:
-        if self.gate.phase != InterceptionPhase.ACTIVE:
-            return
-        result = self.visual_result
-        feature = self.feature
-        reason = ''
+        position_ned = np.asarray(
+            (
+                self.state_machine.x,
+                self.state_machine.y,
+                self.state_machine.z,
+            ),
+            dtype=float,
+        )
+        velocity_ned = self.vehicle_velocity_ned
         if (
-            self.terminal_started_s is None
-            and result is not None
-            and feature is not None
-            and terminal_visual_ready(
-                result.area_ratio,
-                float(feature.x_norm),
-                float(feature.y_norm),
-                self.visual_config.terminal_area_ratio,
-                self.terminal_center_error,
-            )
+            not np.all(np.isfinite(position_ned))
+            or velocity_ned is None
+            or not np.all(np.isfinite(velocity_ned))
         ):
-            reason = 'target scale threshold'
-        elif (
-            self.terminal_started_s is None
-            and feature is None
+            raise ValueError('static target self-state is unavailable')
+        if self._static_initial_p_r_e is None:
+            self._static_initial_p_r_e = observer_p.copy()
+            self._static_reference_position_ned = position_ned.copy()
+
+        displacement_ned = (
+            position_ned - self._static_reference_position_ned
+        )
+        p_r_e = self._static_initial_p_r_e + np.asarray(
+            ned_to_enu(displacement_ned),
+            dtype=float,
+        )
+        v_r_e = np.asarray(ned_to_enu(velocity_ned), dtype=float)
+        feature = self.feature
+        if (
+            feature is None
             and self.last_valid_feature is not None
             and self.last_valid_feature_received_ns is not None
         ):
-            last = self.last_valid_feature
-            age_s = max(
-                0.0,
-                now_s - self.last_valid_feature_received_ns * 1e-9,
-            )
-            if recent_close_target_lost(
-                float(last.area_px) / self.image_area_px,
-                float(last.x_norm),
-                float(last.y_norm),
-                age_s,
-                self.impact_loss_area_ratio,
-                self.impact_loss_center_error,
-                self.impact_loss_timeout_s,
-            ):
-                reason = 'recent close target disappeared'
-        if reason:
+            feature_age_s = (
+                self.get_clock().now().nanoseconds
+                - self.last_valid_feature_received_ns
+            ) * 1e-9
+            if feature_age_s <= self._float_parameter('command_timeout_s'):
+                feature = self.last_valid_feature
+        if feature is None:
+            raise ValueError('static target image is unavailable')
+        image_xy = (
+            np.asarray((feature.x_norm, feature.y_norm), dtype=float)
+        )
+        return p_r_e, v_r_e, image_xy
+
+    def _reset_command_filter(self) -> None:
+        self._filtered_omega_b.fill(0.0)
+        self._filtered_thrust_n = (
+            self.paper_config.mass_kg * self.paper_config.gravity_m_s2
+        )
+        self._filter_last_ns = None
+
+    def _update_visual_terminal(self, now_s: float) -> None:
+        """Leave only after Gazebo contact and green confirmation."""
+        if self.gate.phase != InterceptionPhase.ACTIVE:
+            return
+        if self.terminal_started_s is None and self.contact_confirmed:
             self.terminal_started_s = now_s
             self.visual_interception_complete = True
             self._latch_coast_setpoint()
             self.get_logger().warning(
-                f'Visual impact cue: exiting IBVS on {reason}'
+                'Verified target contact: exiting paper interception control'
             )
+
+    def _update_static_altitude_recovery(self, now_s: float) -> None:
+        """Pause a static-target attack below target height and climb first."""
+        if not self.static_target_mode:
+            return
+        if self.gate.phase != InterceptionPhase.ACTIVE:
+            if self._static_altitude_recovery_active:
+                self._clear_static_altitude_recovery()
+            return
+
+        altitude_m = float(self.state_machine.relative_altitude_m)
+        if not math.isfinite(altitude_m):
+            return
+        if not self._static_altitude_recovery_active:
+            if altitude_m >= self.static_target_altitude_m:
+                return
+            self._static_altitude_recovery_active = True
+            self._static_altitude_recovery_x_ned = float(
+                self.state_machine.x
+            )
+            self._static_altitude_recovery_y_ned = float(
+                self.state_machine.y
+            )
+            self._static_altitude_recovery_yaw_ned = (
+                self.vehicle_heading_ned_rad
+                if self.vehicle_heading_ned_rad is not None
+                else self.target_yaw_rad
+            )
+            self._static_altitude_recovery_ready_since_s = None
+            self._reset_command_filter()
+            self.get_logger().warning(
+                'Static target altitude recovery entered: '
+                f'altitude={altitude_m:.2f} m, '
+                f'target={self.static_target_altitude_m:.2f} m'
+            )
+            return
+
+        recovery_altitude_m = (
+            self.static_target_altitude_m
+            + self.static_altitude_recovery_margin_m
+        )
+        vertical_speed_m_s = math.inf
+        if self.vehicle_velocity_ned is not None:
+            vertical_speed_m_s = abs(float(self.vehicle_velocity_ned[2]))
+        ready = bool(
+            altitude_m
+            >= recovery_altitude_m
+            - self.static_altitude_recovery_tolerance_m
+            and vertical_speed_m_s
+            <= self.static_altitude_recovery_speed_tolerance_m_s
+        )
+        if not ready:
+            self._static_altitude_recovery_ready_since_s = None
+            return
+        if self._static_altitude_recovery_ready_since_s is None:
+            self._static_altitude_recovery_ready_since_s = now_s
+            return
+        if (
+            now_s - self._static_altitude_recovery_ready_since_s
+            < self.static_altitude_recovery_settle_time_s
+        ):
+            return
+
+        self.get_logger().warning(
+            'Static target altitude recovery complete: '
+            f'altitude={altitude_m:.2f} m; resuming interception'
+        )
+        self._clear_static_altitude_recovery()
+        self.visual_result = None
+        self.inner_result = None
+        self.px4_command = None
+        self.command_computed_ns = None
+        self.last_outer_ns = None
+        self._reset_command_filter()
+
+    def _clear_static_altitude_recovery(self) -> None:
+        self._static_altitude_recovery_active = False
+        self._static_altitude_recovery_x_ned = None
+        self._static_altitude_recovery_y_ned = None
+        self._static_altitude_recovery_yaw_ned = None
+        self._static_altitude_recovery_ready_since_s = None
 
     def _run_enabled_step(self, now_s: float, now_ns: int) -> None:
         recovering = self.gate.phase in (
@@ -589,12 +946,23 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             landed=self.state_machine.landed,
             armed=self.state_machine.armed,
             offboard=self.state_machine.offboard,
-            controller_valid=self.px4_command is not None,
+            controller_valid=bool(
+                self.px4_command is not None
+                or self._static_altitude_recovery_active
+            ),
             telemetry_age_s=self._telemetry_age_s(now_ns),
-            command_age_s=self._command_age_s(now_ns),
+            command_age_s=(
+                0.0
+                if self._static_altitude_recovery_active
+                else self._command_age_s(now_ns)
+            ),
             speed_m_s=self.vehicle_speed_m_s,
             tilt_rad=self.state_machine.tilt_rad,
-            barrier_margin=self._barrier_margin(),
+            barrier_margin=(
+                self.k_b
+                if self._static_altitude_recovery_active
+                else self._barrier_margin()
+            ),
             interception_detected=self.visual_interception_complete,
             recovery_ready=self._stabilization_ready(now_s),
         )
@@ -602,16 +970,20 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             self.get_logger().warning(
                 f'Visual interception transition: '
                 f'{self.last_gate_phase.value} -> {self.gate.phase.value}; '
-                f'reason={self.gate.terminal_reason or "visual_control"}'
+                f'reason={self.gate.terminal_reason or "visual_control"}; '
+                f'control={self.control_reason}'
             )
             self.last_gate_phase = self.gate.phase
         if InterceptionAction.HOLD_POSITION in actions:
             self._publish_visual_acquisition_setpoint()
         elif InterceptionAction.STREAM_RATE_SETPOINT in actions:
-            self._publish_rate_mode()
-            if self.gate.phase == InterceptionPhase.PRESTREAM:
+            if self._static_altitude_recovery_active:
+                self._publish_static_altitude_recovery_setpoint()
+            elif self.gate.phase == InterceptionPhase.PRESTREAM:
+                self._publish_rate_mode()
                 self._publish_hover_rate_setpoint()
             else:
+                self._publish_rate_mode()
                 self._publish_interception_setpoint()
         elif InterceptionAction.STREAM_EXIT_SETPOINT in actions:
             self._publish_exit_velocity_setpoint()
@@ -638,6 +1010,8 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             and self.acquisition_command is not None
         ):
             message.control_state = self.acquisition_command.phase.value
+        elif self._static_altitude_recovery_active:
+            message.control_state = 'ALTITUDE_RECOVERY'
         else:
             message.control_state = self.gate.phase.value
         if feature is not None:
@@ -670,35 +1044,30 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         message.commanded_thrust_normalized = (
             self.commanded_thrust_normalized
         )
-        if result is None or command is None:
-            message.valid = False
+        inner = self.inner_result
+        if command is None:
+            message.valid = self._static_altitude_recovery_active
             message.reason = self.control_reason
             self.debug_pub.publish(message)
             return
-        message.z1 = result.z1
-        if self.feature is not None:
-            _assign_vector(
-                message.z2,
-                (
-                    self.feature.x_norm,
-                    self.feature.y_norm,
-                    result.area_ratio,
-                ),
-            )
-        _assign_vector(message.acceleration_d, result.acceleration_d_e)
-        message.attitude_d = tuple(result.attitude_d_b_to_e.reshape(9))
-        _assign_vector(message.omega1_b, result.omega_los_b)
-        _assign_vector(message.omega2_b, result.omega_attitude_b)
-        _assign_vector(message.omega_d_b, self.filtered_omega_b)
-        message.thrust_n = result.thrust_n
-        message.thrust_normalized = -command.thrust_body[2]
-        message.thrust_saturated = result.thrust_saturated
-        message.thrust_mapping_saturated = command.thrust_saturated
-        message.rate_saturated = bool(
-            np.linalg.norm(result.omega_d_b) > self.omega_limit_rad_s
-        )
-        message.valid = True
-        message.reason = 'ok_visual_features_only'
+        if result is not None and inner is not None:
+            message.z1 = result.z1
+            _assign_vector(message.z2, result.z2_e)
+            _assign_vector(message.acceleration_d, result.acceleration_d_e)
+            message.attitude_d = tuple(result.attitude_d_b_to_e.reshape(9))
+            _assign_vector(message.omega1_b, result.omega1_b)
+            _assign_vector(message.omega2_b, inner.omega2_b)
+            _assign_vector(message.omega_d_b, inner.omega_d_b)
+            message.thrust_n = inner.thrust_n
+            message.thrust_normalized = -command.thrust_body[2]
+            message.thrust_saturated = inner.thrust_saturated
+            message.thrust_mapping_saturated = command.thrust_saturated
+            message.rate_saturated = inner.rate_saturated
+            message.valid = True
+            message.reason = self.control_reason
+        else:
+            message.valid = False
+            message.reason = self.control_reason
         self.debug_pub.publish(message)
 
     def _publish_rate_mode(self) -> None:
@@ -708,17 +1077,22 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.offboard_pub.publish(message)
 
     def _update_visual_acquisition(self, now_s: float) -> None:
-        """Search and center using pixels while PX4 holds local position."""
+        """Align the target with the paper-designed LOS while hovering."""
         heading = self.vehicle_heading_ned_rad
         if heading is None:
             return
         feature = self.feature
+        x_error = 0.0
+        y_error = 0.0
+        if feature is not None:
+            x_error = float(feature.x_norm) - self.designed_image_xy[0]
+            y_error = float(feature.y_norm) - self.designed_image_xy[1]
         command = self.acquisition.step(
             now_s=now_s,
             current_yaw_rad=heading,
             target_detected=feature is not None,
-            x_norm=float(feature.x_norm) if feature is not None else 0.0,
-            y_norm=float(feature.y_norm) if feature is not None else 0.0,
+            x_norm=x_error,
+            y_norm=y_error,
         )
         self.acquisition_command = command
         if command.phase != self.last_acquisition_phase:
@@ -727,7 +1101,29 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 f'{self.last_acquisition_phase.value} -> '
                 f'{command.phase.value}'
             )
+            if command.ready:
+                self._reset_observer_for_interception()
             self.last_acquisition_phase = command.phase
+
+    def _reset_observer_for_interception(self) -> None:
+        """Define paper x(0) after takeoff and visual alignment settle."""
+        self.observer_reset_pub.publish(Empty())
+        self.observer_state = None
+        self.observer_received_ns = None
+        self.visual_result = None
+        self.inner_result = None
+        self.px4_command = None
+        self.command_computed_ns = None
+        self.last_outer_ns = None
+        self._static_initial_p_r_e = None
+        self._static_reference_position_ned = None
+        self._clear_static_altitude_recovery()
+        self.contact_confirmed = False
+        self._reset_command_filter()
+        self.control_reason = 'waiting_for_interception_observer_reset'
+        self.get_logger().warning(
+            'Resetting observer at stabilized interception initial state'
+        )
 
     def _publish_visual_acquisition_setpoint(self) -> None:
         """Hold position while search/alignment changes only yaw and height."""
@@ -764,10 +1160,51 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.commanded_acceleration_ned.fill(0.0)
         self.commanded_thrust_normalized = math.nan
 
+    def _publish_static_altitude_recovery_setpoint(self) -> None:
+        """Hold horizontal position and climb above the static target."""
+        home_z = self.state_machine.home_z
+        hold_x = self._static_altitude_recovery_x_ned
+        hold_y = self._static_altitude_recovery_y_ned
+        hold_yaw = self._static_altitude_recovery_yaw_ned
+        if (
+            home_z is None
+            or hold_x is None
+            or hold_y is None
+            or hold_yaw is None
+        ):
+            return
+        recovery_altitude_m = (
+            self.static_target_altitude_m
+            + self.static_altitude_recovery_margin_m
+        )
+        mode = OffboardControlMode()
+        mode.timestamp = self._timestamp_us()
+        mode.position = True
+        self.offboard_pub.publish(mode)
+
+        setpoint = TrajectorySetpoint()
+        setpoint.timestamp = self._timestamp_us()
+        setpoint.position = [
+            float(hold_x),
+            float(hold_y),
+            float(home_z - recovery_altitude_m),
+        ]
+        setpoint.velocity = [math.nan, math.nan, math.nan]
+        setpoint.acceleration = [math.nan, math.nan, math.nan]
+        setpoint.jerk = [math.nan, math.nan, math.nan]
+        setpoint.yaw = float(hold_yaw)
+        setpoint.yawspeed = math.nan
+        self.trajectory_pub.publish(setpoint)
+        self.commanded_body_rates.fill(math.nan)
+        self.commanded_velocity_ned.fill(0.0)
+        self.commanded_acceleration_ned.fill(0.0)
+        self.commanded_thrust_normalized = math.nan
+
     def _publish_hover_rate_setpoint(self) -> None:
+        self._reset_command_filter()
         command = adapt_rate_thrust_command(
             (0.0, 0.0, 0.0),
-            self.visual_config.mass_kg * self.visual_config.gravity_m_s2,
+            self.paper_config.mass_kg * self.paper_config.gravity_m_s2,
             self.omega_limit_rad_s,
             self.mapping,
         )
@@ -833,6 +1270,13 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         acceleration_ned: np.ndarray,
     ) -> None:
         """Publish one finite, auditable velocity-mode transition command."""
+        yaw_ned_rad = self.coast_yaw_ned_rad
+        if yaw_ned_rad is None:
+            yaw_ned_rad = (
+                self.vehicle_heading_ned_rad
+                if self.vehicle_heading_ned_rad is not None
+                else self.target_yaw_rad
+            )
         mode = OffboardControlMode()
         mode.timestamp = self._timestamp_us()
         mode.velocity = True
@@ -843,7 +1287,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         setpoint.velocity = list(velocity_ned)
         setpoint.acceleration = list(acceleration_ned)
         setpoint.jerk = [math.nan, math.nan, math.nan]
-        setpoint.yaw = self.coast_yaw_ned_rad
+        setpoint.yaw = float(yaw_ned_rad)
         setpoint.yawspeed = math.nan
         self.trajectory_pub.publish(setpoint)
         self.commanded_body_rates.fill(math.nan)
@@ -912,7 +1356,11 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         )
 
     def _telemetry_age_s(self, now_ns: int) -> float:
-        timestamps = (self.feature_received_ns, self.odometry_received_ns)
+        timestamps = (
+            self.feature_received_ns,
+            self.observer_received_ns,
+            self.odometry_received_ns,
+        )
         if None in timestamps:
             return 1e9
         return max(now_ns - timestamp for timestamp in timestamps) * 1e-9
@@ -927,11 +1375,11 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             # During the bounded terminal commit, the most recent command and
             # its already-validated visual barrier remain authoritative.
             return self.k_b if self.terminal_started_s is not None else -1e9
-        return self.visual_result.barrier_margin
+        return self.k_b - abs(self.visual_result.z1)
 
 
 def main(args=None) -> None:
-    """Run the integrated camera-feature-only coordinator."""
+    """Run the integrated observer-fed paper controller."""
     import rclpy
 
     rclpy.init(args=args)

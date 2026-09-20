@@ -42,11 +42,17 @@ def generate_launch_description() -> LaunchDescription:
     config = os.path.join(
         package_share, 'config', 'vision_direct_interception.yaml'
     )
+    observer_config = os.path.join(
+        package_share, 'config', 'paper_state_observer.yaml'
+    )
     trial_id = LaunchConfiguration('trial_id')
     results = LaunchConfiguration('results_directory')
     enabled = LaunchConfiguration('enable_flight_commands')
     token = LaunchConfiguration('confirmation_token')
     record_bag = LaunchConfiguration('record_bag')
+    speed_limit = LaunchConfiguration('speed_limit_m_s')
+    horizontal_limit = LaunchConfiguration('max_horizontal_distance_m')
+    static_target_mode = LaunchConfiguration('static_target_mode')
     coordinator = Node(
         package='ibvs_control',
         executable='vision_interception_coordinator',
@@ -60,8 +66,27 @@ def generate_launch_description() -> LaunchDescription:
                     value_type=bool,
                 ),
                 'confirmation_token': token,
+                'static_target_mode': ParameterValue(
+                    static_target_mode,
+                    value_type=bool,
+                ),
+                'speed_limit_m_s': ParameterValue(
+                    speed_limit,
+                    value_type=float,
+                ),
+                'max_horizontal_distance_m': ParameterValue(
+                    horizontal_limit,
+                    value_type=float,
+                ),
             },
         ],
+    )
+    observer = Node(
+        package='ibvs_control',
+        executable='paper_state_observer',
+        name='paper_state_observer',
+        output='screen',
+        parameters=[observer_config],
     )
     bag = ExecuteProcess(
         cmd=[
@@ -71,9 +96,8 @@ def generate_launch_description() -> LaunchDescription:
             '/camera/image_raw',
             '/camera/camera_info',
             '/interception/vision/raw_feature',
-            # The following two streams are evaluation-only bag channels.  The
-            # coordinator has no subscriptions to either of them.
-            '/interception/truth/relative_state',
+            '/interception/observer/state',
+            '/interception/observer/reset',
             '/interception/control/debug',
             '/interception/target/green_confirmed',
             '/world/default/model/ibvs_target/link/target_link/sensor/'
@@ -83,6 +107,7 @@ def generate_launch_description() -> LaunchDescription:
             '/fmu/in/vehicle_rates_setpoint',
             '/fmu/in/vehicle_command',
             '/fmu/out/vehicle_attitude',
+            '/fmu/out/sensor_combined',
             '/fmu/out/vehicle_land_detected',
             '/fmu/out/vehicle_local_position_v1',
             '/fmu/out/vehicle_odometry',
@@ -113,9 +138,15 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument('confirmation_token', default_value=''),
             DeclareLaunchArgument('record_bag', default_value='true'),
+            DeclareLaunchArgument('static_target_mode', default_value='true'),
+            DeclareLaunchArgument('speed_limit_m_s', default_value='4.5'),
+            DeclareLaunchArgument(
+                'max_horizontal_distance_m', default_value='15.0'
+            ),
             OpaqueFunction(function=_prepare_directories),
             shutdown,
             bag,
+            observer,
             coordinator,
         ]
     )
