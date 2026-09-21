@@ -7,6 +7,7 @@ from ibvs_control.so3_controller import (
     OuterLoopConfig,
     attitude_rate_feedback,
     combine_and_saturate_rates,
+    compute_drag_force_e,
     compute_inner_loop,
     compute_outer_loop,
     image_los_in_earth,
@@ -31,6 +32,34 @@ def test_skew_and_vex_are_inverse_cross_product_maps() -> None:
     other = np.array((4.0, 5.0, -6.0))
     assert skew(vector) @ other == pytest.approx(np.cross(vector, other))
     assert vex(skew(vector)) == pytest.approx(vector)
+
+
+def test_paper_drag_force_opposes_earth_velocity() -> None:
+    drag = compute_drag_force_e(
+        velocity_e=(1.0, -2.0, 3.0),
+        attitude_b_to_e=np.eye(3),
+        drag_coefficients_b=(0.1, 0.2, 0.3),
+    )
+    assert drag == pytest.approx((-0.1, 0.4, -0.9))
+
+
+def test_paper_drag_force_rotates_body_coefficients_into_earth() -> None:
+    attitude = rodrigues((0.0, 0.0, 1.0), math.pi / 2.0)
+    drag = compute_drag_force_e(
+        velocity_e=(1.0, 0.0, 0.0),
+        attitude_b_to_e=attitude,
+        drag_coefficients_b=(1.0, 2.0, 3.0),
+    )
+    assert drag == pytest.approx((-2.0, 0.0, 0.0))
+
+
+def test_paper_drag_rejects_negative_coefficients() -> None:
+    with pytest.raises(ValueError, match='nonnegative'):
+        compute_drag_force_e(
+            velocity_e=(1.0, 0.0, 0.0),
+            attitude_b_to_e=np.eye(3),
+            drag_coefficients_b=(-0.1, 0.2, 0.3),
+        )
 
 
 def test_rotation_between_maps_current_thrust_to_desired_thrust() -> None:

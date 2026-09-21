@@ -96,7 +96,24 @@ class VisualAcquisition:
         if target_detected:
             self.last_seen_s = now_s
 
-        if self.phase == VisualAcquisitionPhase.SEARCH:
+        if self.phase == VisualAcquisitionPhase.READY:
+            # READY is a revocable visual lock, not a latched mission event.
+            # A dropped frame immediately removes readiness while the loss
+            # timeout prevents a single dropout from restarting the scan.
+            if target_detected:
+                if image_error >= self.config.release_error:
+                    self.phase = VisualAcquisitionPhase.ALIGN
+                    self.centered_since_s = None
+            elif (
+                self.last_seen_s is None
+                or now_s - self.last_seen_s
+                >= self.config.target_loss_timeout_s
+            ):
+                self.phase = VisualAcquisitionPhase.SEARCH
+                self.centered_since_s = None
+                self.yaw_setpoint_rad = _wrap_angle(current_yaw_rad)
+
+        elif self.phase == VisualAcquisitionPhase.SEARCH:
             self.centered_since_s = None
             if target_detected:
                 self.phase = VisualAcquisitionPhase.ALIGN
@@ -107,7 +124,7 @@ class VisualAcquisition:
                     + self.config.search_yaw_rate_rad_s * elapsed_s
                 )
 
-        if self.phase == VisualAcquisitionPhase.ALIGN:
+        elif self.phase == VisualAcquisitionPhase.ALIGN:
             if target_detected:
                 self.yaw_setpoint_rad = _wrap_angle(
                     self.yaw_setpoint_rad
@@ -142,7 +159,11 @@ class VisualAcquisition:
             yaw_setpoint_rad=self.yaw_setpoint_rad,
             vertical_offset_m=self.vertical_offset_m,
             image_error=image_error,
-            ready=self.phase == VisualAcquisitionPhase.READY,
+            ready=bool(
+                self.phase == VisualAcquisitionPhase.READY
+                and target_detected
+                and image_error < self.config.release_error
+            ),
         )
 
 

@@ -56,6 +56,32 @@ class InnerLoopResult:
     rate_saturated: bool
 
 
+def compute_drag_force_e(
+    velocity_e: Sequence[float],
+    attitude_b_to_e: Sequence[Sequence[float]],
+    drag_coefficients_b: Sequence[float],
+) -> np.ndarray:
+    """Evaluate the paper's linear body-frame aerodynamic drag model.
+
+    The paper defines ``f_drag = -R_b^e D (R_b^e)^T v^e`` with
+    ``D = diag(d_x, d_y, d_z)``.  The coefficients therefore have units of
+    kg/s and must be nonnegative.  The returned force is expressed in ENU.
+    """
+    velocity = _vector3(velocity_e, 'velocity_e')
+    rotation = _rotation3(attitude_b_to_e, 'attitude_b_to_e')
+    coefficients = np.asarray(drag_coefficients_b, dtype=float)
+    if (
+        coefficients.shape != (3,)
+        or not np.all(np.isfinite(coefficients))
+        or np.any(coefficients < 0.0)
+    ):
+        raise ValueError(
+            'drag_coefficients_b must contain three finite nonnegative values'
+        )
+    velocity_b = rotation.T @ velocity
+    return -rotation @ (coefficients * velocity_b)
+
+
 def compute_outer_loop(
     p_r_e: Sequence[float],
     v_r_e: Sequence[float],

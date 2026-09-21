@@ -71,6 +71,10 @@ vision_interception_coordinator:
                               0.0, -1.0, 0.0]
     mass_kg: 2.0
     thrust_max_n: 26.9784
+    # Paper model: F_drag^e = -R_b^e D R_e^b v^e,
+    # D = diag(d_x, d_y, d_z), units kg/s. The paper does not publish D;
+    # these are conservative initial values for the x500 SITL vehicle.
+    drag_coefficients_b_kg_s: [0.08, 0.12, 0.15]
     hover_thrust_normalized: 0.727
     omega_limit_rad_s: 0.20
 
@@ -79,6 +83,9 @@ vision_interception_coordinator:
     image_area_px: 1228800.0
     # Camera-only acquisition. ALIGN targets the designed -5 deg LOS rather
     # than the optical centre, preserving the above-target height margin.
+    # After takeoff settles, stale/missing detections keep the vehicle in a
+    # position-hold yaw scan; interception cannot start from an old frame.
+    visual_feature_timeout_s: 0.20
     visual_search_yaw_rate_rad_s: 0.20
     visual_align_yaw_gain_rad_s: 1.2
     visual_align_vertical_gain_m_s: 0.4

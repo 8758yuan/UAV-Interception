@@ -170,3 +170,26 @@ def test_flight_config_contains_no_removed_nonpaper_p0_paths() -> None:
     )
     for setting in removed:
         assert setting not in config
+
+
+def test_visual_search_rejects_stale_target_detection() -> None:
+    """A stopped camera cannot leave acquisition latched as target-ready."""
+    coordinator = object.__new__(
+        vision_interception_coordinator.VisionInterceptionCoordinator
+    )
+    coordinator.feature = object()
+    coordinator.feature_received_ns = 1_000_000_000
+    coordinator.visual_feature_timeout_s = 0.20
+
+    assert coordinator._fresh_feature(1_200_000_000) is coordinator.feature
+    assert coordinator._fresh_feature(1_200_000_001) is None
+
+
+def test_visual_search_configuration_is_enabled_for_flight() -> None:
+    config = (
+        Path(__file__).parents[1]
+        / 'config'
+        / 'vision_direct_interception.yaml'
+    ).read_text(encoding='utf-8')
+    assert 'visual_feature_timeout_s: 0.20' in config
+    assert 'visual_search_yaw_rate_rad_s: 0.20' in config

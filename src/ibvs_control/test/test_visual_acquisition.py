@@ -94,6 +94,70 @@ def test_lost_alignment_returns_to_search() -> None:
     assert not command.ready
 
 
+def test_ready_lock_is_revoked_immediately_when_target_disappears() -> None:
+    acquisition = VisualAcquisition(_config())
+    acquisition.step(
+        now_s=0.0,
+        current_yaw_rad=0.0,
+        target_detected=True,
+    )
+    acquisition.step(
+        now_s=0.1,
+        current_yaw_rad=0.0,
+        target_detected=True,
+    )
+    ready = acquisition.step(
+        now_s=0.61,
+        current_yaw_rad=0.0,
+        target_detected=True,
+    )
+    assert ready.ready
+
+    dropout = acquisition.step(
+        now_s=0.70,
+        current_yaw_rad=0.0,
+        target_detected=False,
+    )
+    assert dropout.phase == VisualAcquisitionPhase.READY
+    assert not dropout.ready
+
+    searching = acquisition.step(
+        now_s=0.92,
+        current_yaw_rad=0.0,
+        target_detected=False,
+    )
+    assert searching.phase == VisualAcquisitionPhase.SEARCH
+    assert not searching.ready
+
+
+def test_ready_lock_returns_to_alignment_when_target_moves() -> None:
+    acquisition = VisualAcquisition(_config())
+    acquisition.step(
+        now_s=0.0,
+        current_yaw_rad=0.0,
+        target_detected=True,
+    )
+    acquisition.step(
+        now_s=0.1,
+        current_yaw_rad=0.0,
+        target_detected=True,
+    )
+    acquisition.step(
+        now_s=0.61,
+        current_yaw_rad=0.0,
+        target_detected=True,
+    )
+
+    command = acquisition.step(
+        now_s=0.62,
+        current_yaw_rad=0.0,
+        target_detected=True,
+        x_norm=0.15,
+    )
+    assert command.phase == VisualAcquisitionPhase.ALIGN
+    assert not command.ready
+
+
 def test_configuration_rejects_inverted_hysteresis() -> None:
     config = _config()
     with pytest.raises(ValueError, match='release_error'):

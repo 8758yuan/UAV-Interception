@@ -25,6 +25,7 @@ from rclpy.qos import (
 from std_msgs.msg import Bool, Empty
 
 from ibvs_control.frames import (
+    ned_to_enu,
     px4_quaternion_to_enu_flu_rotation,
     quaternion_wxyz_to_euler,
 )
@@ -44,6 +45,7 @@ from ibvs_control.so3_controller import (
     InnerLoopResult,
     OuterLoopConfig,
     OuterLoopResult,
+    compute_drag_force_e,
     compute_inner_loop,
     compute_outer_loop,
     image_los_in_earth,
@@ -92,6 +94,22 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             thrust_max_n=self._float_parameter('thrust_max_n'),
         )
         self.paper_config.validate()
+        drag_coefficients = np.asarray(
+            self.get_parameter('drag_coefficients_b_kg_s').value,
+            dtype=float,
+        )
+        if (
+            drag_coefficients.shape != (3,)
+            or not np.all(np.isfinite(drag_coefficients))
+            or np.any(drag_coefficients < 0.0)
+        ):
+            raise ValueError(
+                'drag_coefficients_b_kg_s must contain three finite '
+                'nonnegative values'
+            )
+        self.drag_coefficients_b = tuple(
+            float(value) for value in drag_coefficients
+        )
         camera_rotation = np.asarray(
             self.get_parameter('camera_to_body_rotation').value,
             dtype=float,
@@ -156,6 +174,9 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         )
         self.mapping.validate()
         self.image_area_px = self._float_parameter('image_area_px')
+        self.visual_feature_timeout_s = self._float_parameter(
+            'visual_feature_timeout_s'
+        )
         self.stabilize_duration_s = self._float_parameter(
             'stabilize_duration_s'
         )
@@ -164,6 +185,8 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         )
         if self.image_area_px <= 0.0:
             raise ValueError('image_area_px must be positive')
+        if self.visual_feature_timeout_s <= 0.0:
+            raise ValueError('visual_feature_timeout_s must be positive')
         if self.stabilize_duration_s <= 0.0:
             raise ValueError('stabilize_duration_s must be positive')
         if not 0.0 < self.stabilize_tilt_tolerance_rad < math.pi / 2.0:
@@ -326,6 +349,12 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         )
         self.declare_parameter('mass_kg', 2.0)
         self.declare_parameter('thrust_max_n', 26.9784)
+        # Paper model: F_drag^e = -R_b^e D R_e^b v^e. The paper does not
+        # publish D; these are conservative initial identification values.
+        self.declare_parameter(
+            'drag_coefficients_b_kg_s',
+            [0.08, 0.12, 0.15],
+        )
         self.declare_parameter('hover_thrust_normalized', 0.75)
         self.declare_parameter('safe_los_angle_deg', 60.0)
         self.declare_parameter('paper_k1', 0.05)
@@ -340,6 +369,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             ],
         )
         self.declare_parameter('image_area_px', 1228800.0)
+        self.declare_parameter('visual_feature_timeout_s', 0.20)
         self.declare_parameter('visual_search_yaw_rate_rad_s', 0.20)
         self.declare_parameter('visual_align_yaw_gain_rad_s', 1.2)
         self.declare_parameter('visual_align_vertical_gain_m_s', 0.4)
@@ -460,6 +490,24 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                     self.odometry.q
                 )
                 p_r_e, v_r_e, image_xy = self._controller_state(observer)
+                # VehicleLocalPosition is explicitly NED and is preferred
+                # here.  The odometry fallback preserves the controller's
+                # existing NED convention for startup/debug-only cases.
+                velocity_ned = self.vehicle_velocity_ned
+                if velocity_ned is None:
+                    velocity_ned = np.asarray(
+                        self.odometry.velocity,
+                        dtype=float,
+                    )
+                velocity_e = np.asarray(
+                    ned_to_enu(velocity_ned),
+                    dtype=float,
+                )
+                drag_force_e = compute_drag_force_e(
+                    velocity_e,
+                    vehicle_attitude,
+                    self.drag_coefficients_b,
+                )
                 outer_due = bool(
                     self.visual_result is None
                     or self.last_outer_ns is None
@@ -479,6 +527,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                         designed_los_e,
                         vehicle_attitude,
                         self.paper_config,
+                        drag_force_e=drag_force_e,
                     )
                     self.last_outer_ns = now_ns
                 else:
@@ -489,6 +538,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                         vehicle_attitude,
                         self.paper_config,
                         self.omega_limit_rad_s,
+                        drag_force_e=drag_force_e,
                     )
             except (TypeError, ValueError) as error:
                 self.control_reason = f'paper_observer_invalid: {error}'
@@ -569,13 +619,14 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             return
 
         if self.gate.phase == InterceptionPhase.WAIT_HOVER:
-            self._update_visual_acquisition(now_s)
+            self._update_visual_acquisition(now_s, now_ns)
 
         actions = self.gate.step(
             now_s=now_s,
             hover_ready=bool(
                 self.acquisition_command is not None
                 and self.acquisition_command.ready
+                and self._fresh_feature(now_ns) is not None
             ),
             landed=self.state_machine.landed,
             armed=self.state_machine.armed,
@@ -699,12 +750,12 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         message.body_rate = True
         self.offboard_pub.publish(message)
 
-    def _update_visual_acquisition(self, now_s: float) -> None:
-        """Align the target with the paper-designed LOS while hovering."""
+    def _update_visual_acquisition(self, now_s: float, now_ns: int) -> None:
+        """Search for and align a fresh target observation while hovering."""
         heading = self.vehicle_heading_ned_rad
         if heading is None:
             return
-        feature = self.feature
+        feature = self._fresh_feature(now_ns)
         x_error = 0.0
         y_error = 0.0
         if feature is not None:
@@ -727,6 +778,16 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             if command.ready:
                 self._reset_observer_for_interception()
             self.last_acquisition_phase = command.phase
+
+    def _fresh_feature(self, now_ns: int) -> Optional[VisionFeature]:
+        """Return the current detection only while its receipt is fresh."""
+        if self.feature is None or self.feature_received_ns is None:
+            return None
+        age_ns = now_ns - self.feature_received_ns
+        timeout_ns = int(self.visual_feature_timeout_s * 1e9)
+        if age_ns < 0 or age_ns > timeout_ns:
+            return None
+        return self.feature
 
     def _reset_observer_for_interception(self) -> None:
         """Define paper x(0) after takeoff and visual alignment settle."""
