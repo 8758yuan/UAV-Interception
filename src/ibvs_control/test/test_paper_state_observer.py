@@ -1,4 +1,4 @@
-"""Verification of the paper-aligned undelayed 18-state observer."""
+"""Verification of the paper-aligned delayed 18-state observer."""
 
 import math
 
@@ -171,6 +171,120 @@ def test_current_image_update_reduces_image_uncertainty() -> None:
     )
 
 
+def test_delayed_update_corrects_past_state_then_replays_imu_substeps() -> None:
+    """D counts DKF periods, independent of IMU substeps in each period."""
+    config = ObserverConfig(dkf_delay_steps=2)
+    delayed = PaperStateObserver(config=config)
+    reference = PaperStateObserver(config=config)
+    for observer in (delayed, reference):
+        observer.initialize_from_image(
+            (1.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0),
+            12.0,
+        )
+
+    imu_samples = [
+        ((0.01, -0.02, 0.03), (0.1, -0.1, GRAVITY), 0.005),
+        ((0.02, -0.01, 0.02), (0.0, 0.1, GRAVITY), 0.005),
+        ((0.03, 0.00, 0.01), (-0.1, 0.0, GRAVITY), 0.005),
+        ((0.02, 0.01, 0.00), (0.0, -0.1, GRAVITY), 0.005),
+    ]
+    measurement = (0.01, -0.008)
+    reference.correct_image(measurement)
+    for index, (gyro, accel, dt_s) in enumerate(imu_samples):
+        reference.predict(gyro, accel, dt_s)
+        delayed.predict(gyro, accel, dt_s)
+        # Deliberately make the two DKF periods contain one and three IMU
+        # substeps: readiness must depend on two periods, not four samples.
+        if index in (0, 3):
+            delayed.complete_dkf_cycle()
+
+    assert delayed.delay_history_ready
+    result = delayed.correct_delayed_image(measurement)
+    expected = reference.snapshot()
+    assert result.state.as_vector() == pytest.approx(
+        expected.state.as_vector(), abs=1e-12
+    )
+    assert result.covariance == pytest.approx(
+        expected.covariance, abs=1e-12
+    )
+    assert result.prediction_count == len(imu_samples)
+    assert result.correction_count == 1
+
+
+def test_delayed_update_waits_for_complete_dkf_history() -> None:
+    observer = PaperStateObserver(
+        config=ObserverConfig(dkf_delay_steps=4)
+    )
+    observer.initialize_from_image(
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0),
+        12.0,
+    )
+    for _ in range(3):
+        for _ in range(4):
+            observer.predict(
+                (0.0, 0.0, 0.0),
+                (0.0, 0.0, GRAVITY),
+                0.005,
+            )
+        observer.complete_dkf_cycle()
+    before = observer.snapshot()
+    assert not observer.delay_history_ready
+    with pytest.raises(RuntimeError, match='3/4 DKF cycles'):
+        observer.correct_delayed_image((0.01, 0.0))
+    after = observer.snapshot()
+    assert after.state == before.state
+    assert after.covariance == pytest.approx(before.covariance)
+
+
+def test_consecutive_delayed_updates_preserve_overlapping_history() -> None:
+    """A replayed correction must update checkpoints used by the next frame."""
+    config = ObserverConfig(dkf_delay_steps=2)
+    delayed = PaperStateObserver(config=config)
+    expected = PaperStateObserver(config=config)
+    for observer in (delayed, expected):
+        observer.initialize_from_image(
+            (1.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0),
+            12.0,
+        )
+    imu_samples = [
+        ((0.01, 0.00, 0.02), (0.0, 0.0, GRAVITY), 0.005),
+        ((0.02, 0.00, 0.01), (0.1, 0.0, GRAVITY), 0.005),
+        ((0.01, 0.01, 0.00), (0.0, 0.1, GRAVITY), 0.005),
+        ((0.00, 0.02, 0.01), (0.0, 0.0, GRAVITY), 0.005),
+        ((0.01, 0.01, 0.02), (-0.1, 0.0, GRAVITY), 0.005),
+        ((0.02, 0.00, 0.01), (0.0, -0.1, GRAVITY), 0.005),
+    ]
+    first_measurement = (0.01, -0.008)
+    second_measurement = (0.015, -0.006)
+
+    expected.correct_image(first_measurement)
+    for sample in imu_samples[:2]:
+        expected.predict(*sample)
+    expected.correct_image(second_measurement)
+    for sample in imu_samples[2:]:
+        expected.predict(*sample)
+
+    for cycle in range(2):
+        for sample in imu_samples[cycle * 2:(cycle + 1) * 2]:
+            delayed.predict(*sample)
+        delayed.complete_dkf_cycle()
+    delayed.correct_delayed_image(first_measurement)
+    for sample in imu_samples[4:]:
+        delayed.predict(*sample)
+    delayed.complete_dkf_cycle()
+    result = delayed.correct_delayed_image(second_measurement)
+
+    assert result.state.as_vector() == pytest.approx(
+        expected.snapshot().state.as_vector(), abs=1e-12
+    )
+    assert result.covariance == pytest.approx(
+        expected.snapshot().covariance, abs=1e-12
+    )
+
+
 def test_image_innovation_gate_rejects_anomalous_current_frame() -> None:
     observer = PaperStateObserver(
         config=ObserverConfig(maximum_image_innovation_nis=0.1)
@@ -197,7 +311,9 @@ def test_image_innovation_updates_observable_imu_bias_states() -> None:
             0.01,
         )
     before = observer.snapshot().state
-    after = observer.correct_image((0.1, -0.08)).state
+    # Stay inside the configured two-dimensional NIS gate so this test
+    # exercises the accepted-update cross-covariances.
+    after = observer.correct_image((0.04, -0.03)).state
     assert np.linalg.norm(after.b_gyr_b) > np.linalg.norm(before.b_gyr_b)
     assert np.linalg.norm(after.b_acc_b) > np.linalg.norm(before.b_acc_b)
 
@@ -243,3 +359,8 @@ def test_reset_discards_state_and_counters() -> None:
     assert not observer.initialized
     assert observer.prediction_count == 0
     assert observer.correction_count == 0
+
+
+def test_dkf_delay_configuration_requires_integer_period_counts() -> None:
+    with pytest.raises(ValueError, match='dkf_delay_steps'):
+        ObserverConfig(dkf_delay_steps=-1).validate()

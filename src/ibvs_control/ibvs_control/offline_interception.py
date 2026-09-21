@@ -186,7 +186,7 @@ def simulate_interception(
 
 
 def default_controller_config() -> OuterLoopConfig:
-    """Return the first offline-safe tuning candidate, not a paper parameter."""
+    """Return the default paper-controller tuning used offline."""
     return OuterLoopConfig(
         k1=0.02,
         k2=20.0,

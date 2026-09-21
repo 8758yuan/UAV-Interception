@@ -1,4 +1,4 @@
-"""ROS 2 wrapper for the paper's undelayed 18-state observer."""
+"""ROS 2 wrapper for the paper's delayed 18-state observer."""
 
 import math
 from typing import Optional
@@ -31,7 +31,7 @@ from ibvs_control.paper_state_observer import (
 
 
 class PaperStateObserverNode(Node):
-    """Fuse onboard IMU and current image measurements without target truth."""
+    """Fuse onboard IMU and delayed image measurements without target truth."""
 
     def __init__(self) -> None:
         super().__init__('paper_state_observer')
@@ -50,6 +50,9 @@ class PaperStateObserverNode(Node):
             covariance_floor=self._positive('covariance_floor'),
             maximum_image_innovation_nis=self._positive(
                 'maximum_image_innovation_nis'
+            ),
+            dkf_delay_steps=self._nonnegative_integer(
+                'dkf_delay_steps'
             ),
         )
         noise = ObserverNoise(
@@ -82,12 +85,12 @@ class PaperStateObserverNode(Node):
         # an estimate that is already stale when rate control starts.
         self.initialization_armed = not self.require_interception_reset
         self.initial_q_b_to_e: Optional[tuple] = None
-        # IMU runs faster than the camera.  Keep it as an integration buffer;
-        # the public observer state is updated and published only by the image
-        # callback, once per camera feature frame.
+        # IMU runs faster than the 50 Hz DKF.  Each timer cycle groups all
+        # queued IMU propagation substeps into one paper discrete-time block.
         self.pending_imu_samples: list[
             tuple[int, np.ndarray, np.ndarray]
         ] = []
+        self.pending_feature: Optional[VisionFeature] = None
         self.last_imu_timestamp_us: Optional[int] = None
         self.last_queued_imu_timestamp_us: Optional[int] = None
         self.image_update_count = 0
@@ -128,9 +131,12 @@ class PaperStateObserverNode(Node):
             self._reset_callback,
             10,
         )
+        dkf_update_rate_hz = self._positive('dkf_update_rate_hz')
+        self.create_timer(1.0 / dkf_update_rate_hz, self._dkf_callback)
         self.get_logger().info(
-            'Paper 18-state observer ready: image-rate update, '
-            'IMU buffered between frames, D=0'
+            f'Paper 18-state DKF ready: {dkf_update_rate_hz:.0f} Hz, '
+            'IMU substeps grouped per update, '
+            f'D={self.observer.config.dkf_delay_steps} DKF periods'
         )
 
     def _declare_parameters(self) -> None:
@@ -164,6 +170,11 @@ class PaperStateObserverNode(Node):
         self.declare_parameter('maximum_dt_s', 0.05)
         self.declare_parameter('covariance_floor', 1e-12)
         self.declare_parameter('maximum_image_innovation_nis', 9.21)
+        # The paper's practical DKF runs at 50 Hz and reports about 80 ms of
+        # imaging/processing delay: D = round(0.080 * 50) = 4 DKF periods.
+        # The 200 Hz IMU contributes four propagation substeps per period.
+        self.declare_parameter('dkf_delay_steps', 4)
+        self.declare_parameter('dkf_update_rate_hz', 50.0)
         self.declare_parameter('initial_q_std', 0.005)
         self.declare_parameter('initial_position_std_m', 0.5)
         self.declare_parameter('initial_velocity_std_m_s', 0.2)
@@ -186,6 +197,7 @@ class PaperStateObserverNode(Node):
         self.observer.reset()
         self.initialization_armed = True
         self.pending_imu_samples.clear()
+        self.pending_feature = None
         self.last_imu_timestamp_us = None
         self.last_queued_imu_timestamp_us = None
         self.last_error = ''
@@ -228,19 +240,8 @@ class PaperStateObserverNode(Node):
                 )
                 self._publish(snapshot, 'initialized')
                 return
-            self._predict_pending_imu()
-            if message.valid:
-                snapshot = self.observer.correct_image(image_xy)
-                self._publish(snapshot, 'image_corrected_d0')
-            else:
-                # Keep one observer publication per camera frame, while
-                # marking the state unusable for the controller on a frame
-                # without a valid target measurement.
-                self._publish(
-                    self.observer.snapshot(),
-                    message.reason or 'image_invalid',
-                    valid=False,
-                )
+            # The 50 Hz DKF timer consumes at most one newest 30 Hz image.
+            self.pending_feature = message
         except (RuntimeError, ValueError, np.linalg.LinAlgError) as error:
             reason = str(error)
             self._log_error_once(reason)
@@ -252,6 +253,44 @@ class PaperStateObserverNode(Node):
                 )
             else:
                 self._publish_uninitialized(reason)
+
+    def _dkf_callback(self) -> None:
+        """Complete one DKF period, optionally correcting a delayed image."""
+        if not self.observer.initialized:
+            return
+        try:
+            self._predict_pending_imu()
+            self.observer.complete_dkf_cycle()
+            feature = self.pending_feature
+            self.pending_feature = None
+            if feature is None:
+                self._publish(self.observer.snapshot(), 'imu_predicted')
+                return
+            if not feature.valid:
+                self._publish(
+                    self.observer.snapshot(),
+                    feature.reason or 'image_invalid',
+                    valid=False,
+                )
+                return
+            if not self.observer.delay_history_ready:
+                self._publish(
+                    self.observer.snapshot(),
+                    'delay_history_warming',
+                )
+                return
+            image_xy = (float(feature.x_norm), float(feature.y_norm))
+            snapshot = self.observer.correct_delayed_image(image_xy)
+            delay_steps = self.observer.config.dkf_delay_steps
+            self._publish(snapshot, f'image_corrected_d{delay_steps}')
+        except (RuntimeError, ValueError, np.linalg.LinAlgError) as error:
+            reason = str(error)
+            self._log_error_once(reason)
+            self._publish(
+                self.observer.snapshot(),
+                reason,
+                valid=False,
+            )
 
     def _imu_callback(self, message: SensorCombined) -> None:
         if not self.observer.initialized:
@@ -273,7 +312,7 @@ class PaperStateObserverNode(Node):
             self._log_error_once(str(error))
 
     def _predict_pending_imu(self) -> None:
-        """Integrate all IMU samples since the previous image update."""
+        """Integrate all IMU samples accumulated in this DKF period."""
         while self.pending_imu_samples:
             timestamp_us, gyro_b, accel_b = self.pending_imu_samples.pop(0)
             if self.last_imu_timestamp_us is None:
@@ -351,6 +390,12 @@ class PaperStateObserverNode(Node):
         if values.shape != (length,) or not np.all(np.isfinite(values)):
             raise ValueError(f'{name} must contain {length} finite values')
         return values
+
+    def _nonnegative_integer(self, name: str) -> int:
+        value = self.get_parameter(name).value
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f'{name} must be a nonnegative integer')
+        return value
 
 
 def _assign_vector(message, values) -> None:

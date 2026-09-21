@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 import math
-from typing import Optional, Sequence
+from typing import Sequence
 
 import numpy as np
 
@@ -17,12 +17,6 @@ class OuterLoopConfig:
     mass_kg: float
     thrust_max_n: float
     gravity_m_s2: float = 9.80665
-    max_command_tilt_rad: float = math.radians(20.0)
-    # ``None`` keeps the exact paper equations for offline analysis.  A real
-    # airframe can opt into these envelopes because the paper assumes an
-    # effectively unlimited thrust/acceleration budget.
-    max_acceleration_m_s2: Optional[float] = None
-    max_vertical_acceleration_m_s2: Optional[float] = None
 
     def validate(self) -> None:
         """Reject nonphysical gains and limits."""
@@ -35,25 +29,6 @@ class OuterLoopConfig:
             raise ValueError('thrust_max_n must be finite and positive')
         if not math.isfinite(self.gravity_m_s2) or self.gravity_m_s2 <= 0.0:
             raise ValueError('gravity_m_s2 must be finite and positive')
-        if (
-            not math.isfinite(self.max_command_tilt_rad)
-            or self.max_command_tilt_rad <= 0.0
-            or self.max_command_tilt_rad >= math.pi / 2.0
-        ):
-            raise ValueError(
-                'max_command_tilt_rad must be within (0, pi/2)'
-            )
-        for name, value in (
-            ('max_acceleration_m_s2', self.max_acceleration_m_s2),
-            (
-                'max_vertical_acceleration_m_s2',
-                self.max_vertical_acceleration_m_s2,
-            ),
-        ):
-            if value is not None and (
-                not math.isfinite(value) or value <= 0.0
-            ):
-                raise ValueError(f'{name} must be finite and positive')
 
 
 @dataclass(frozen=True)
@@ -120,17 +95,9 @@ def compute_outer_loop(
         + barrier_gain * config.mass_kg / distance_m * projection @ n_td
         + a_target
     )
-    acceleration_d = _limit_acceleration(
-        acceleration_d,
-        config.max_acceleration_m_s2,
-        config.max_vertical_acceleration_m_s2,
-    )
     gravity = np.array((0.0, 0.0, -config.gravity_m_s2))
     desired_force = config.mass_kg * (acceleration_d - gravity) - drag
-    n_fd = _limit_tilt_direction(
-        _unit3(desired_force, 'desired force'),
-        config.max_command_tilt_rad,
-    )
+    n_fd = _unit3(desired_force, 'desired force')
 
     n_f = rotation[:, 2]
     attitude_d = rotation_between(n_f, n_fd) @ rotation
@@ -156,7 +123,6 @@ def compute_inner_loop(
     omega_max_rad_s: float,
     *,
     drag_force_e: Sequence[float] = (0.0, 0.0, 0.0),
-    minimum_thrust_n: float = 0.0,
 ) -> InnerLoopResult:
     """
     Evaluate the 200 Hz part of Algorithm 1 using paper equations.
@@ -166,14 +132,6 @@ def compute_inner_loop(
     and (26), before the norm saturation in equations (28)-(29).
     """
     config.validate()
-    if (
-        not math.isfinite(minimum_thrust_n)
-        or minimum_thrust_n < 0.0
-        or minimum_thrust_n > config.thrust_max_n
-    ):
-        raise ValueError(
-            'minimum_thrust_n must be within [0, thrust_max_n]'
-        )
     rotation = _rotation3(attitude_b_to_e, 'attitude_b_to_e')
     drag = _vector3(drag_force_e, 'drag_force_e')
     omega2_b = attitude_rate_feedback(
@@ -192,10 +150,7 @@ def compute_inner_loop(
         config.mass_kg * (outer.acceleration_d_e - gravity) - drag
     )
     raw_thrust_n = float(rotation[:, 2] @ desired_force)
-    thrust_n = min(
-        max(raw_thrust_n, minimum_thrust_n),
-        config.thrust_max_n,
-    )
+    thrust_n = min(max(raw_thrust_n, 0.0), config.thrust_max_n)
     return InnerLoopResult(
         omega2_b=omega2_b,
         omega_d_b=omega_d_b,
@@ -205,31 +160,6 @@ def compute_inner_loop(
             np.linalg.norm(raw_rate_b) > omega_max_rad_s
         ),
     )
-
-
-def _limit_acceleration(
-    acceleration_e: Sequence[float],
-    maximum_m_s2: Optional[float],
-    maximum_vertical_m_s2: Optional[float],
-) -> np.ndarray:
-    """Bound acceleration without changing the paper command direction.
-
-    Section III-D notes that practical saturation may change command
-    magnitude, but not direction.  In particular, clipping only the vertical
-    component destroys the collinearity correction contained in equation
-    (19), so both envelopes are applied through one common scale factor.
-    """
-    acceleration = _vector3(acceleration_e, 'acceleration_d_e')
-    scale = 1.0
-    if maximum_vertical_m_s2 is not None:
-        vertical_magnitude = abs(float(acceleration[2]))
-        if vertical_magnitude > maximum_vertical_m_s2:
-            scale = min(scale, maximum_vertical_m_s2 / vertical_magnitude)
-    if maximum_m_s2 is not None:
-        norm = float(np.linalg.norm(acceleration))
-        if norm > maximum_m_s2:
-            scale = min(scale, maximum_m_s2 / norm)
-    return acceleration * scale
 
 
 def image_los_in_earth(
@@ -279,72 +209,6 @@ def combine_and_saturate_rates(
     return combined * (omega_max_rad_s / norm)
 
 
-def low_pass_rates(
-    previous_omega_b: Sequence[float],
-    desired_omega_b: Sequence[float],
-    elapsed_s: float,
-    time_constant_s: float,
-) -> np.ndarray:
-    """Apply a time-step-independent first-order filter to body rates."""
-    previous = _vector3(previous_omega_b, 'previous_omega_b')
-    desired = _vector3(desired_omega_b, 'desired_omega_b')
-    if not math.isfinite(elapsed_s) or elapsed_s < 0.0:
-        raise ValueError('elapsed_s must be finite and nonnegative')
-    if not math.isfinite(time_constant_s) or time_constant_s < 0.0:
-        raise ValueError('time_constant_s must be finite and nonnegative')
-    if time_constant_s == 0.0 or elapsed_s == 0.0:
-        return desired.copy() if time_constant_s == 0.0 else previous.copy()
-    alpha = -math.expm1(-elapsed_s / time_constant_s)
-    return previous + alpha * (desired - previous)
-
-
-def protect_tilt_rate(
-    desired_omega_b: Sequence[float],
-    attitude_b_to_e: Sequence[Sequence[float]],
-    recovery_start_rad: float,
-    recovery_full_rad: float,
-    omega_max_rad_s: float,
-) -> np.ndarray:
-    """Blend a nominal paper rate into level recovery outside its envelope.
-
-    The paper command is returned unchanged below ``recovery_start_rad``.
-    Above that soft boundary, the shortest SO(3) rotation that brings the
-    thrust axis back to earth-up progressively replaces the nominal command.
-    This is an airframe protection layer, not a replacement control law.
-    """
-    desired = _vector3(desired_omega_b, 'desired_omega_b')
-    rotation = _rotation3(attitude_b_to_e, 'attitude_b_to_e')
-    values = (recovery_start_rad, recovery_full_rad, omega_max_rad_s)
-    if not all(math.isfinite(value) and value > 0.0 for value in values):
-        raise ValueError('tilt recovery limits and omega_max must be positive')
-    if not recovery_start_rad < recovery_full_rad < math.pi / 2.0:
-        raise ValueError(
-            'tilt recovery limits must satisfy 0 < start < full < pi/2'
-        )
-
-    thrust_axis_e = rotation[:, 2]
-    tilt_rad = math.acos(
-        float(np.clip(thrust_axis_e[2], -1.0, 1.0))
-    )
-    if tilt_rad <= recovery_start_rad:
-        return desired.copy()
-
-    level_attitude = (
-        rotation_between(thrust_axis_e, (0.0, 0.0, 1.0)) @ rotation
-    )
-    recovery_rate = attitude_rate_feedback(level_attitude, rotation)
-    blend = min(
-        1.0,
-        (tilt_rad - recovery_start_rad)
-        / (recovery_full_rad - recovery_start_rad),
-    )
-    protected = (1.0 - blend) * desired + blend * recovery_rate
-    norm = float(np.linalg.norm(protected))
-    if norm > omega_max_rad_s:
-        protected *= omega_max_rad_s / norm
-    return protected
-
-
 def rotation_between(
     current_direction: Sequence[float],
     desired_direction: Sequence[float],
@@ -382,32 +246,6 @@ def skew(vector: Sequence[float]) -> np.ndarray:
     """Return the cross-product matrix of a three-vector."""
     x, y, z = _vector3(vector, 'vector')
     return np.array(((0.0, -z, y), (z, 0.0, -x), (-y, x, 0.0)))
-
-
-def _limit_tilt_direction(
-    direction: Sequence[float],
-    max_tilt_rad: float,
-) -> np.ndarray:
-    """Limit a desired thrust direction to a realizable upward cone."""
-    unit = _unit3(direction, 'direction')
-    if (
-        not math.isfinite(max_tilt_rad)
-        or max_tilt_rad <= 0.0
-        or max_tilt_rad >= math.pi / 2.0
-    ):
-        raise ValueError('max_tilt_rad must be within (0, pi/2)')
-    minimum_vertical = math.cos(max_tilt_rad)
-    if float(unit[2]) >= minimum_vertical:
-        return unit
-    horizontal = np.array((unit[0], unit[1], 0.0))
-    horizontal_norm = float(np.linalg.norm(horizontal))
-    if horizontal_norm <= 1e-12:
-        return np.array((0.0, 0.0, 1.0))
-    return np.array((
-        math.sin(max_tilt_rad) * horizontal[0] / horizontal_norm,
-        math.sin(max_tilt_rad) * horizontal[1] / horizontal_norm,
-        minimum_vertical,
-    ))
 
 
 def vex(matrix: Sequence[Sequence[float]]) -> np.ndarray:

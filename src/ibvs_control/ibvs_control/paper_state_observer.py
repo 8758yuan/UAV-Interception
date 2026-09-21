@@ -1,4 +1,4 @@
-"""Undelayed 18-state EKF from the paper's Appendix B and C equations."""
+"""18-state delayed EKF from the paper's Appendix B and C equations."""
 
 from dataclasses import dataclass
 import math
@@ -96,6 +96,7 @@ class ObserverConfig:
     maximum_dt_s: float = 0.05
     covariance_floor: float = 1e-12
     maximum_image_innovation_nis: float = 9.21
+    dkf_delay_steps: int = 0
 
     def validate(self) -> None:
         """Validate frames and finite numerical limits."""
@@ -119,6 +120,9 @@ class ObserverConfig:
             value = float(getattr(self, name))
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f'{name} must be finite and positive')
+        value = self.dkf_delay_steps
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError('dkf_delay_steps must be a nonnegative integer')
 
 
 @dataclass(frozen=True)
@@ -132,8 +136,28 @@ class ObserverSnapshot:
     innovation_norm: float
 
 
+@dataclass
+class _PredictionRecord:
+    """One saved IMU transition used to replay a delayed correction."""
+
+    prior_x: np.ndarray
+    prior_covariance: np.ndarray
+    gyro: np.ndarray
+    accel: np.ndarray
+    dt_s: float
+
+
+@dataclass
+class _DkfCycleRecord:
+    """State checkpoint and IMU substeps belonging to one DKF period."""
+
+    prior_x: np.ndarray
+    prior_covariance: np.ndarray
+    predictions: list[_PredictionRecord]
+
+
 class PaperStateObserver:
-    """EKF using Appendix B propagation and a current-image D=0 update."""
+    """EKF using Appendix B propagation and the paper's delayed update."""
 
     def __init__(
         self,
@@ -151,6 +175,10 @@ class PaperStateObserver:
         self.innovation_norm = 0.0
         self.last_F = np.eye(STATE_DIM)
         self.last_G = np.zeros((STATE_DIM, PROCESS_NOISE_DIM))
+        self._dkf_history: list[_DkfCycleRecord] = []
+        self._pending_predictions: list[_PredictionRecord] = []
+        self._pending_prior_x: np.ndarray | None = None
+        self._pending_prior_covariance: np.ndarray | None = None
         self._gravity = np.asarray(config.gravity_e, dtype=float)
         self._r_c_to_b = np.asarray(
             config.camera_to_body_rotation,
@@ -176,6 +204,7 @@ class PaperStateObserver:
         self.innovation_norm = 0.0
         self.last_F = np.eye(STATE_DIM)
         self.last_G = np.zeros((STATE_DIM, PROCESS_NOISE_DIM))
+        self._clear_delay_history()
 
     def initialize(self, state: InterceptionState18) -> ObserverSnapshot:
         """Initialize x and diagonal P without any target world-state input."""
@@ -198,6 +227,7 @@ class PaperStateObserver:
         self.innovation_norm = 0.0
         self.last_F = np.eye(STATE_DIM)
         self.last_G = np.zeros((STATE_DIM, PROCESS_NOISE_DIM))
+        self._clear_delay_history()
         return self.snapshot()
 
     def initialize_from_image(
@@ -255,11 +285,25 @@ class PaperStateObserver:
                 f'dt_s must be within (0, {self.config.maximum_dt_s}]'
             )
 
-        predicted, F, G = self._appendix_prediction(x, gyro, accel, dt_s)
-        predicted_covariance = F @ covariance @ F.T + G @ self._Q @ G.T
-        predicted_covariance = _stabilize_covariance(
-            predicted_covariance,
-            self.config.covariance_floor,
+        if self.config.dkf_delay_steps > 0:
+            if self._pending_prior_x is None:
+                self._pending_prior_x = x.copy()
+                self._pending_prior_covariance = covariance.copy()
+            self._pending_predictions.append(
+                _PredictionRecord(
+                    prior_x=x.copy(),
+                    prior_covariance=covariance.copy(),
+                    gyro=gyro.copy(),
+                    accel=accel.copy(),
+                    dt_s=dt_s,
+                )
+            )
+        predicted, predicted_covariance, F, G = self._predict_arrays(
+            x,
+            covariance,
+            gyro,
+            accel,
+            dt_s,
         )
         self.x = predicted
         self.P = predicted_covariance
@@ -270,6 +314,134 @@ class PaperStateObserver:
 
     def correct_image(self, image_xy: Sequence[float]) -> ObserverSnapshot:
         """Apply the current-image D=0 form of paper equations (32)-(36)."""
+        return self._correct_current_image(image_xy)
+
+    @property
+    def delay_history_ready(self) -> bool:
+        """Return whether all D saved DKF periods are available."""
+        delay_steps = self.config.dkf_delay_steps
+        return delay_steps == 0 or len(self._dkf_history) >= delay_steps
+
+    def complete_dkf_cycle(self) -> None:
+        """Save one 50 Hz DKF checkpoint containing its IMU substeps."""
+        delay_steps = self.config.dkf_delay_steps
+        if delay_steps == 0:
+            return
+        x, covariance = self._require_state()
+        prior_x = self._pending_prior_x
+        prior_covariance = self._pending_prior_covariance
+        if prior_x is None or prior_covariance is None:
+            prior_x = x.copy()
+            prior_covariance = covariance.copy()
+        self._dkf_history.append(
+            _DkfCycleRecord(
+                prior_x=prior_x,
+                prior_covariance=prior_covariance,
+                predictions=self._pending_predictions,
+            )
+        )
+        excess = len(self._dkf_history) - delay_steps
+        if excess > 0:
+            del self._dkf_history[:excess]
+        self._pending_predictions = []
+        self._pending_prior_x = None
+        self._pending_prior_covariance = None
+
+    def correct_delayed_image(
+        self,
+        image_xy: Sequence[float],
+    ) -> ObserverSnapshot:
+        """Correct x[k-D] and replay D stored DKF blocks per Algorithm 2."""
+        delay_steps = self.config.dkf_delay_steps
+        if delay_steps == 0:
+            return self._correct_current_image(image_xy)
+        if self._pending_predictions:
+            raise RuntimeError(
+                'complete_dkf_cycle must be called before delayed correction'
+            )
+        if len(self._dkf_history) < delay_steps:
+            raise RuntimeError(
+                'delayed image history is not ready: '
+                f'{len(self._dkf_history)}/{delay_steps} DKF cycles'
+            )
+
+        current_x, current_covariance = self._require_state()
+        saved_x = current_x.copy()
+        saved_covariance = current_covariance.copy()
+        saved_history = [
+            _DkfCycleRecord(
+                prior_x=cycle.prior_x.copy(),
+                prior_covariance=cycle.prior_covariance.copy(),
+                predictions=[
+                    _PredictionRecord(
+                        prior_x=record.prior_x.copy(),
+                        prior_covariance=record.prior_covariance.copy(),
+                        gyro=record.gyro.copy(),
+                        accel=record.accel.copy(),
+                        dt_s=record.dt_s,
+                    )
+                    for record in cycle.predictions
+                ],
+            )
+            for cycle in self._dkf_history
+        ]
+        saved_correction_count = self.correction_count
+        saved_innovation_norm = self.innovation_norm
+        saved_last_F = self.last_F.copy()
+        saved_last_G = self.last_G.copy()
+
+        try:
+            oldest = self._dkf_history[0]
+            self.x = oldest.prior_x.copy()
+            self.P = oldest.prior_covariance.copy()
+            self._correct_current_image(image_xy)
+
+            replay_x, replay_covariance = self._require_state()
+            for cycle in self._dkf_history:
+                cycle.prior_x = replay_x.copy()
+                cycle.prior_covariance = replay_covariance.copy()
+                for record in cycle.predictions:
+                    record.prior_x = replay_x.copy()
+                    record.prior_covariance = replay_covariance.copy()
+                    (
+                        replay_x,
+                        replay_covariance,
+                        self.last_F,
+                        self.last_G,
+                    ) = self._predict_arrays(
+                        replay_x,
+                        replay_covariance,
+                        record.gyro,
+                        record.accel,
+                        record.dt_s,
+                    )
+            self.x = replay_x
+            self.P = replay_covariance
+            return self.snapshot()
+        except Exception:
+            # A failed replay must be atomic: retain the live current estimate
+            # and the exact checkpoints needed by the next delayed frame.
+            self.x = saved_x
+            self.P = saved_covariance
+            self._dkf_history = saved_history
+            self.correction_count = saved_correction_count
+            self.innovation_norm = saved_innovation_norm
+            self.last_F = saved_last_F
+            self.last_G = saved_last_G
+            raise
+
+    def _clear_delay_history(self) -> None:
+        """Clear completed DKF blocks and an in-progress block."""
+        self._dkf_history.clear()
+        self._pending_predictions.clear()
+        self._pending_prior_x = None
+        self._pending_prior_covariance = None
+
+    def _correct_current_image(
+        self,
+        image_xy: Sequence[float],
+    ) -> ObserverSnapshot:
+        """Apply equations (32)-(36) to the estimate at its current epoch."""
         x, covariance = self._require_state()
         measurement = _finite_vector(image_xy, 2, 'image_xy')
         H = np.zeros((MEASUREMENT_DIM, STATE_DIM))
@@ -281,11 +453,9 @@ class PaperStateObserver:
             @ np.linalg.solve(innovation_covariance, innovation)
         )
         self.innovation_norm = float(np.linalg.norm(innovation))
-        # A current-image D=0 update must still reject a frame that is too
-        # far from the predicted image.  In SITL this is also the guard
-        # against a camera/bridge frame arriving late while the aircraft is
-        # rotating.  The paper equations are used unchanged for accepted
-        # measurements; rejected measurements leave the prediction intact.
+        # Reject a frame that is too far from the image predicted at the same
+        # epoch (current for D=0, historical for D>0).  The paper equations
+        # remain unchanged for accepted measurements.
         if innovation_nis > self.config.maximum_image_innovation_nis:
             return self.snapshot()
         gain = np.linalg.solve(
@@ -312,6 +482,23 @@ class PaperStateObserver:
         )
         self.correction_count += 1
         return self.snapshot()
+
+    def _predict_arrays(
+        self,
+        x: np.ndarray,
+        covariance: np.ndarray,
+        gyro: np.ndarray,
+        accel: np.ndarray,
+        dt_s: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Predict arrays without changing counters or recording history."""
+        predicted, F, G = self._appendix_prediction(x, gyro, accel, dt_s)
+        predicted_covariance = F @ covariance @ F.T + G @ self._Q @ G.T
+        predicted_covariance = _stabilize_covariance(
+            predicted_covariance,
+            self.config.covariance_floor,
+        )
+        return predicted, predicted_covariance, F, G
 
     def snapshot(self) -> ObserverSnapshot:
         """Return defensive copies of the current state and covariance."""

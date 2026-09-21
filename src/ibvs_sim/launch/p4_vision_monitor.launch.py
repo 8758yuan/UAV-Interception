@@ -1,4 +1,4 @@
-"""Spawn the target and start the undelayed forward-camera data path."""
+"""Spawn the target and start the delayed forward-camera data path."""
 
 import os
 
@@ -7,6 +7,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -16,6 +17,7 @@ def generate_launch_description() -> LaunchDescription:
     target_y = LaunchConfiguration('target_y')
     target_z = LaunchConfiguration('target_z')
     model_name = LaunchConfiguration('vehicle_model_name')
+    image_delay = LaunchConfiguration('image_delay_s')
     camera_image_gz = [
         '/world/', world, '/model/', model_name,
         '/link/camera_link/sensor/camera/image',
@@ -85,7 +87,10 @@ def generate_launch_description() -> LaunchDescription:
         package='ibvs_perception',
         executable='red_target_detector',
         name='red_target_detector',
-        parameters=[{'use_sim_time': True}],
+        parameters=[{
+            'use_sim_time': True,
+            'image_delay_s': ParameterValue(image_delay, value_type=float),
+        }],
         output='screen',
     )
     return LaunchDescription(
@@ -98,6 +103,9 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 'vehicle_model_name', default_value='x500_mono_cam_0'
             ),
+            # Paper flight experiments report about 80 ms total imaging and
+            # processing delay.  This makes SITL exercise the same DKF path.
+            DeclareLaunchArgument('image_delay_s', default_value='0.08'),
             clock_bridge,
             contact_bridge,
             spawn_target,

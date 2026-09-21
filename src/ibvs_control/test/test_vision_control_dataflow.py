@@ -128,4 +128,45 @@ def test_trial_launches_and_records_observer() -> None:
     assert "'/interception/observer/reset'" in trial_launch
     assert "'/fmu/out/sensor_combined'" in trial_launch
     assert "DeclareLaunchArgument('speed_limit_m_s'" in trial_launch
+    assert "'interception_tilt_limit_deg': ParameterValue" in trial_launch
     assert "'max_horizontal_distance_m': ParameterValue" in trial_launch
+
+
+def test_sitl_delay_and_dkf_period_configuration_match_paper() -> None:
+    """Eighty milliseconds at 50 Hz is D=4, not 16 IMU samples."""
+    workspace_src = Path(__file__).parents[2]
+    observer_config = (
+        workspace_src
+        / 'ibvs_control'
+        / 'config'
+        / 'paper_state_observer.yaml'
+    ).read_text(encoding='utf-8')
+    vision_launch = (
+        workspace_src
+        / 'ibvs_sim'
+        / 'launch'
+        / 'p4_vision_monitor.launch.py'
+    ).read_text(encoding='utf-8')
+    assert 'dkf_delay_steps: 4' in observer_config
+    assert 'dkf_update_rate_hz: 50.0' in observer_config
+    assert "default_value='0.08'" in vision_launch
+
+
+def test_flight_config_contains_no_removed_nonpaper_p0_paths() -> None:
+    """Removed engineering branches cannot be re-enabled from YAML."""
+    config = (
+        Path(__file__).parents[1]
+        / 'config'
+        / 'vision_direct_interception.yaml'
+    ).read_text(encoding='utf-8')
+    removed = (
+        'static_target_mode',
+        'enable_acceleration_limits',
+        'enable_force_tilt_limit',
+        'enable_tilt_recovery',
+        'minimum_interception_thrust_normalized',
+        'interception_rate_filter_time_constant_s',
+        'interception_thrust_filter_time_constant_s',
+    )
+    for setting in removed:
+        assert setting not in config

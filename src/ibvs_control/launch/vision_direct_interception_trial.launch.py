@@ -1,4 +1,4 @@
-"""Run one auditable P4 no-delay visual-interception trial."""
+"""Run one auditable delayed-DKF visual-interception trial."""
 
 import os
 from pathlib import Path
@@ -51,8 +51,8 @@ def generate_launch_description() -> LaunchDescription:
     token = LaunchConfiguration('confirmation_token')
     record_bag = LaunchConfiguration('record_bag')
     speed_limit = LaunchConfiguration('speed_limit_m_s')
+    tilt_limit = LaunchConfiguration('interception_tilt_limit_deg')
     horizontal_limit = LaunchConfiguration('max_horizontal_distance_m')
-    static_target_mode = LaunchConfiguration('static_target_mode')
     coordinator = Node(
         package='ibvs_control',
         executable='vision_interception_coordinator',
@@ -66,12 +66,12 @@ def generate_launch_description() -> LaunchDescription:
                     value_type=bool,
                 ),
                 'confirmation_token': token,
-                'static_target_mode': ParameterValue(
-                    static_target_mode,
-                    value_type=bool,
-                ),
                 'speed_limit_m_s': ParameterValue(
                     speed_limit,
+                    value_type=float,
+                ),
+                'interception_tilt_limit_deg': ParameterValue(
+                    tilt_limit,
                     value_type=float,
                 ),
                 'max_horizontal_distance_m': ParameterValue(
@@ -138,8 +138,10 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument('confirmation_token', default_value=''),
             DeclareLaunchArgument('record_bag', default_value='true'),
-            DeclareLaunchArgument('static_target_mode', default_value='true'),
-            DeclareLaunchArgument('speed_limit_m_s', default_value='4.5'),
+            DeclareLaunchArgument('speed_limit_m_s', default_value='7.0'),
+            DeclareLaunchArgument(
+                'interception_tilt_limit_deg', default_value='55.0'
+            ),
             DeclareLaunchArgument(
                 'max_horizontal_distance_m', default_value='15.0'
             ),

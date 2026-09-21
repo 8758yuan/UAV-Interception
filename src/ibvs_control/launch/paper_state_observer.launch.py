@@ -1,4 +1,4 @@
-"""Launch the paper's 18-state observer with current-image D=0 updates."""
+"""Launch the paper's 18-state observer with delayed-image DKF updates."""
 
 from launch import LaunchDescription
 from launch.substitutions import PathJoinSubstitution

@@ -1,12 +1,14 @@
 """ROS-message integration for observer-to-paper-controller data flow."""
 
 import numpy as np
+import pytest
 import rclpy
 
 from interception_interfaces.msg import ObserverState, VisionFeature
 from px4_msgs.msg import VehicleOdometry
 from std_msgs.msg import Bool
 from ibvs_control.interception_state_machine import InterceptionPhase
+from ibvs_control.so3_controller import compute_outer_loop
 from ibvs_control.vision_interception_coordinator import (
     VisionInterceptionCoordinator,
 )
@@ -59,6 +61,60 @@ def test_static_baseline_uses_a_downward_designed_los() -> None:
         node = VisionInterceptionCoordinator()
         assert node.designed_los_b[2] < 0.0
         assert node.designed_image_xy[1] > 0.0
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def test_default_outer_loop_does_not_clip_paper_acceleration() -> None:
+    """Equation (19) must reach the force calculation without scaling."""
+    rclpy.init()
+    node = None
+    try:
+        node = VisionInterceptionCoordinator()
+        result = compute_outer_loop(
+            p_r_e=(-7.0, 0.0, 0.0),
+            v_r_e=(2.2, 0.0, 0.0),
+            los_e=(1.0, 0.0, 0.0),
+            designed_los_e=(1.0, 0.0, 0.0),
+            attitude_b_to_e=np.eye(3),
+            config=node.paper_config,
+        )
+        z2_x = 2.2 + node.paper_config.k1 * -7.0
+        expected_x = (
+            -node.paper_config.k1 * 2.2
+            - node.paper_config.k2 * z2_x
+            - -7.0
+        )
+        assert result.acceleration_d_e == pytest.approx(
+            (expected_x, 0.0, 0.0)
+        )
+        assert np.linalg.norm(result.acceleration_d_e) > 0.5
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def test_nonpaper_p0_paths_are_absent() -> None:
+    """Removed P0 branches cannot be re-enabled through node attributes."""
+    rclpy.init()
+    node = None
+    try:
+        node = VisionInterceptionCoordinator()
+        removed = (
+            'static_target_mode',
+            'enable_acceleration_limits',
+            'enable_force_tilt_limit',
+            'enable_tilt_recovery',
+            'minimum_interception_thrust_n',
+            'rate_filter_time_constant_s',
+            'thrust_filter_time_constant_s',
+        )
+        assert all(not hasattr(node, name) for name in removed)
     finally:
         if node is not None:
             node.destroy_node()

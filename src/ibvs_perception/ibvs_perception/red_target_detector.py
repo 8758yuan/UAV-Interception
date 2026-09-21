@@ -1,5 +1,7 @@
-"""Detect the red Gazebo target and publish an undelayed image feature."""
+"""Detect the red Gazebo target and publish a delayed image feature."""
 
+from collections import deque
+import math
 from typing import Optional
 
 from interception_interfaces.msg import VisionFeature
@@ -13,6 +15,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import Empty
 
 from ibvs_perception.camera_geometry import (
     CameraIntrinsics,
@@ -35,10 +38,21 @@ class RedTargetDetector(Node):
         self.declare_parameter('fallback_horizontal_fov_rad', 1.74)
         self.declare_parameter('minimum_area_px', 20.0)
         self.declare_parameter('detector_stride', 2)
+        self.declare_parameter('image_delay_s', 0.08)
+        self.declare_parameter('delay_poll_period_s', 0.005)
+        self.declare_parameter(
+            'observer_reset_topic',
+            '/interception/observer/reset',
+        )
+        self.image_delay_s = self._nonnegative_parameter('image_delay_s')
+        delay_poll_period_s = self._positive_parameter(
+            'delay_poll_period_s'
+        )
         self.intrinsics: Optional[CameraIntrinsics] = None
         self.sequence = 0
-        # A visual servo must prefer the newest frame over processing a FIFO
-        # backlog.  This is not a delay model: old frames are discarded.
+        self.delayed_features = deque()
+        # Prefer the newest camera input over a bridge FIFO backlog.  The
+        # explicit bounded delay line below is separate from transport QoS.
         latest_sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
@@ -62,8 +76,16 @@ class RedTargetDetector(Node):
             self._image_callback,
             latest_sensor_qos,
         )
+        self.create_subscription(
+            Empty,
+            str(self.get_parameter('observer_reset_topic').value),
+            self._reset_callback,
+            10,
+        )
+        self.create_timer(delay_poll_period_s, self._publish_ready_features)
         self.get_logger().info(
-            'Red target detector ready: direct camera arrival, no delay queue'
+            'Red target detector ready: '
+            f'{self.image_delay_s * 1000.0:.0f} ms image delay'
         )
 
     def _camera_info_callback(self, message: CameraInfo) -> None:
@@ -84,7 +106,6 @@ class RedTargetDetector(Node):
     def _image_callback(self, message: Image) -> None:
         feature = VisionFeature()
         feature.capture_stamp = message.header.stamp
-        feature.publish_stamp = self.get_clock().now().to_msg()
         feature.sequence = self.sequence
         self.sequence += 1
         try:
@@ -117,7 +138,39 @@ class RedTargetDetector(Node):
         except ValueError as error:
             feature.valid = False
             feature.reason = str(error)
-        self.publisher.publish(feature)
+        now_ns = self.get_clock().now().nanoseconds
+        capture_ns = _stamp_to_nanoseconds(feature.capture_stamp)
+        release_ns = _delayed_release_ns(
+            capture_ns,
+            now_ns,
+            self.image_delay_s,
+        )
+        self.delayed_features.append((release_ns, feature))
+        self._publish_ready_features()
+
+    def _publish_ready_features(self) -> None:
+        """Publish frames once capture-to-publication delay reaches 80 ms."""
+        now = self.get_clock().now()
+        while self.delayed_features and self.delayed_features[0][0] <= now.nanoseconds:
+            _, feature = self.delayed_features.popleft()
+            feature.publish_stamp = now.to_msg()
+            self.publisher.publish(feature)
+
+    def _reset_callback(self, _message: Empty) -> None:
+        """Discard pre-interception frames still waiting in the delay line."""
+        self.delayed_features.clear()
+
+    def _nonnegative_parameter(self, name: str) -> float:
+        value = float(self.get_parameter(name).value)
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f'{name} must be finite and nonnegative')
+        return value
+
+    def _positive_parameter(self, name: str) -> float:
+        value = self._nonnegative_parameter(name)
+        if value == 0.0:
+            raise ValueError(f'{name} must be positive')
+        return value
 
     def _intrinsics_for_image(self, image: Image) -> CameraIntrinsics:
         intrinsics = self.intrinsics
@@ -160,8 +213,25 @@ def _image_to_rgb(message: Image) -> np.ndarray:
     return pixels[:, :, order]
 
 
+def _stamp_to_nanoseconds(stamp) -> int:
+    """Convert a ROS builtin time message without depending on clock type."""
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+
+def _delayed_release_ns(
+    capture_ns: int,
+    arrival_ns: int,
+    delay_s: float,
+) -> int:
+    """Return the absolute release epoch for a capture-time delay."""
+    delay_ns = int(round(delay_s * 1e9))
+    if capture_ns <= 0:
+        return arrival_ns + delay_ns
+    return max(arrival_ns, capture_ns + delay_ns)
+
+
 def main(args=None) -> None:
-    """Run the undelayed red target detector."""
+    """Run the red target detector with a capture-time delay line."""
     rclpy.init(args=args)
     node = RedTargetDetector()
     try:

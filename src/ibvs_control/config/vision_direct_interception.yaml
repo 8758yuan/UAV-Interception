@@ -5,19 +5,7 @@ vision_interception_coordinator:
     # Explicit opt-in remains mandatory for a command-producing trial.
     enable_flight_commands: false
     confirmation_token: ''
-    # Static-target stabilization: after observer initialization, use only
-    # onboard PX4 displacement/velocity for p_r/v_r. No target truth is read.
-    static_target_mode: true
-    # Known experiment geometry, not a Gazebo target-state subscription.
-    # If the interceptor falls below the 3 m target, horizontal attack is
-    # paused. PX4 position mode holds x/y and climbs to 3.8 m; after settling,
-    # the paper interception controller resumes. The 0.8 m hysteresis prevents
-    # rapid switching around target height.
-    static_target_altitude_m: 3.0
-    static_altitude_recovery_margin_m: 0.8
-    static_altitude_recovery_tolerance_m: 0.10
-    static_altitude_recovery_speed_tolerance_m_s: 0.20
-    static_altitude_recovery_settle_time_s: 0.50
+    # Paper baseline: p_r, v_r, and image state all come from the DKF.
 
     topics:
       offboard_control_mode: /fmu/in/offboard_control_mode
@@ -65,17 +53,14 @@ vision_interception_coordinator:
     max_horizontal_distance_m: 15.0
     max_relative_altitude_m: 5.0
     min_hold_altitude_m: 0.5
-    max_tilt_deg: 30.0
+    # Paper flight tests report approximately 50 deg peak pitch. Keep the
+    # independent vehicle-level stop above that demonstrated envelope.
+    max_tilt_deg: 60.0
 
     # Paper Section III, equations (13), (19), (21)-(23), (26), and (28).
-    # The paper does not publish k1/k2; these conservative values are the
-    # deterministic static-target baseline validated in this workspace.
-    # For a static target these gains give about 2 m/s at 12 m range and then
-    # reduce speed with range.  The static controller explicitly realizes
-    # v_rd=-k1*p_r=k1*||p_r||*n_t, so transverse relative velocity is driven
-    # to zero instead of allowing the aircraft to pass beside the target.
+    # The paper does not publish k1/k2; these are project tuning values.
     paper_k1: 0.05
-    paper_k2: 8.5
+    paper_k2: 3.0
     safe_los_angle_deg: 60.0
     # Negative pitch means the target stays below the interceptor. At the
     # nominal 12 m start, -5 deg corresponds to about 1.05 m height margin.
@@ -87,23 +72,7 @@ vision_interception_coordinator:
     mass_kg: 2.0
     thrust_max_n: 26.9784
     hover_thrust_normalized: 0.727
-    max_command_tilt_deg: 8.0
     omega_limit_rad_s: 0.20
-    # The nominal paper command remains untouched below 10 deg. If measured
-    # tilt leaves the 8 deg design cone, progressively replace it with the
-    # shortest SO(3) leveling rate; at 15 deg recovery is fully authoritative.
-    tilt_recovery_start_deg: 10.0
-    tilt_recovery_full_deg: 15.0
-    # The ideal paper acceleration is not directly realizable by this X500.
-    # Both limits use one common scale factor: saturation changes magnitude,
-    # never the direction of the paper's collinearity command.
-    max_interception_acceleration_m_s2: 2.0
-    max_interception_vertical_acceleration_m_s2: 0.6
-    minimum_interception_thrust_normalized: 0.70
-    # Rate/thrust commands are filtered at the PX4 setpoint boundary so a
-    # single noisy observer update cannot reverse the airframe in one tick.
-    interception_rate_filter_time_constant_s: 0.30
-    interception_thrust_filter_time_constant_s: 0.30
 
     # 1280x960 image. Area remains diagnostic; only verified Gazebo contact
     # plus the green-material confirmation commits the impact transition.
@@ -122,8 +91,11 @@ vision_interception_coordinator:
     mission_timeout_s: 60.0
     interception_telemetry_timeout_s: 0.5
     command_timeout_s: 0.1
-    speed_limit_m_s: 4.5
-    interception_tilt_limit_deg: 18.0
+    # The strict paper law initially asks for about 58 deg at 12 m. The
+    # simulated vehicle is expected to hit before reaching that attitude;
+    # these remain termination limits rather than command-shaping limits.
+    speed_limit_m_s: 7.0
+    interception_tilt_limit_deg: 55.0
     minimum_barrier_margin: 0.02
     # Preserve the measured velocity briefly so the setpoint is continuous and
     # the airframe clears the balloon, then use a zero-slope smooth stop.

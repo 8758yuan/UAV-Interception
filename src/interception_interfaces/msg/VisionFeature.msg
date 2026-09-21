@@ -1,5 +1,5 @@
 # Image-plane target observation.  Both timestamps use the shared simulation
-# clock so a later delay/DKF stage can distinguish capture from publication.
+# clock so the DKF can audit capture-to-publication delay.
 builtin_interfaces/Time capture_stamp
 builtin_interfaces/Time publish_stamp
 uint64 sequence
