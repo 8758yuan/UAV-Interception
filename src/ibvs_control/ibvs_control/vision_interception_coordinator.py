@@ -118,8 +118,8 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             raise ValueError('camera_to_body_rotation must contain 9 values')
         self.camera_to_body_rotation = camera_rotation.reshape((3, 3))
         # The configured pitch is positive from body-forward toward body-up.
-        # A negative value places the target below the interceptor so the
-        # interception path approaches the target diagonally from above.
+        # The camera-centre trial uses zero so the controlled LOS and the
+        # camera optical axis are the same physical impact line.
         designed_pitch = math.radians(
             self._float_parameter('designed_los_pitch_deg')
         )
@@ -170,6 +170,13 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             mass_kg=self.paper_config.mass_kg,
             hover_thrust_normalized=self._float_parameter(
                 'hover_thrust_normalized'
+            ),
+            maximum_thrust_n=self.paper_config.thrust_max_n,
+            thrust_curve_exponent=self._float_parameter(
+                'thrust_curve_exponent'
+            ),
+            actuator_minimum_fraction=self._float_parameter(
+                'actuator_minimum_fraction'
             ),
         )
         self.mapping.validate()
@@ -347,19 +354,20 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             'topics.vehicle_odometry',
             '/fmu/out/vehicle_odometry',
         )
-        self.declare_parameter('mass_kg', 2.0)
-        self.declare_parameter('thrust_max_n', 26.9784)
-        # Paper model: F_drag^e = -R_b^e D R_e^b v^e. The paper does not
-        # publish D; these are conservative initial identification values.
+        self.declare_parameter('mass_kg', 2.1143076923)
+        self.declare_parameter('thrust_max_n', 58.8399)
+        # Equivalent linearized x500 rotor drag for the paper T/W=3 baseline.
         self.declare_parameter(
             'drag_coefficients_b_kg_s',
-            [0.08, 0.12, 0.15],
+            [0.1862366, 0.1862366, 0.0],
         )
-        self.declare_parameter('hover_thrust_normalized', 0.75)
+        self.declare_parameter('hover_thrust_normalized', 0.5219057941)
+        self.declare_parameter('thrust_curve_exponent', 2.0)
+        self.declare_parameter('actuator_minimum_fraction', 0.15)
         self.declare_parameter('safe_los_angle_deg', 60.0)
         self.declare_parameter('paper_k1', 0.05)
         self.declare_parameter('paper_k2', 3.0)
-        self.declare_parameter('designed_los_pitch_deg', -5.0)
+        self.declare_parameter('designed_los_pitch_deg', 0.0)
         self.declare_parameter(
             'camera_to_body_rotation',
             [
@@ -383,8 +391,8 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('interception_prestream_duration_s', 1.0)
         self.declare_parameter('mission_timeout_s', 60.0)
         self.declare_parameter('interception_telemetry_timeout_s', 0.5)
-        self.declare_parameter('command_timeout_s', 0.1)
-        self.declare_parameter('speed_limit_m_s', 4.5)
+        self.declare_parameter('command_timeout_s', 0.2)
+        self.declare_parameter('speed_limit_m_s', 21.0)
         self.declare_parameter('interception_tilt_limit_deg', 18.0)
         self.declare_parameter('minimum_barrier_margin', 0.02)
         self.declare_parameter('post_hit_coast_duration_s', 0.20)
@@ -544,10 +552,18 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 self.control_reason = f'paper_observer_invalid: {error}'
 
         if paper_inner is None:
-            self.visual_result = paper_result
-            self.inner_result = paper_inner
-            self.px4_command = None
-            self.command_computed_ns = None
+            # Retain the most recent valid command for the bounded freshness
+            # window enforced by command_timeout_s. Clearing it here made a
+            # single invalid DKF sample abort immediately and bypassed that
+            # gate, including the minimum-depth singularity just before
+            # physical target contact.
+            if self.px4_command is not None:
+                if not self.control_reason.startswith(
+                    'holding_last_valid_command:'
+                ):
+                    self.control_reason = (
+                        f'holding_last_valid_command: {self.control_reason}'
+                    )
             return
 
         try:
@@ -558,11 +574,10 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 self.mapping,
             )
         except (TypeError, ValueError) as error:
-            self.visual_result = paper_result
-            self.inner_result = paper_inner
-            self.px4_command = None
-            self.command_computed_ns = None
-            self.control_reason = str(error)
+            self.control_reason = (
+                f'holding_last_valid_command: {error}'
+                if self.px4_command is not None else str(error)
+            )
             return
         self.visual_result = paper_result
         self.inner_result = paper_inner

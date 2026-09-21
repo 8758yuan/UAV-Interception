@@ -23,8 +23,11 @@ class Px4CommandAdapterNode(Node):
         super().__init__('px4_command_adapter')
         self.declare_parameter('enable_control', False)
         self.declare_parameter('confirmation_token', '')
-        self.declare_parameter('mass_kg', 2.0)
-        self.declare_parameter('hover_thrust_normalized', 0.727)
+        self.declare_parameter('mass_kg', 2.1143076923)
+        self.declare_parameter('hover_thrust_normalized', 0.5219057941)
+        self.declare_parameter('maximum_thrust_n', 58.8399)
+        self.declare_parameter('thrust_curve_exponent', 2.0)
+        self.declare_parameter('actuator_minimum_fraction', 0.15)
         self.declare_parameter('omega_limit_rad_s', 0.5)
         self.declare_parameter('command_timeout_s', 0.1)
         self.declare_parameter('publish_rate_hz', 200.0)
@@ -45,6 +48,11 @@ class Px4CommandAdapterNode(Node):
             mass_kg=self._positive('mass_kg'),
             hover_thrust_normalized=self._positive(
                 'hover_thrust_normalized'
+            ),
+            maximum_thrust_n=self._positive('maximum_thrust_n'),
+            thrust_curve_exponent=self._positive('thrust_curve_exponent'),
+            actuator_minimum_fraction=self._nonnegative(
+                'actuator_minimum_fraction'
             ),
         )
         self.mapping.validate()
@@ -77,6 +85,12 @@ class Px4CommandAdapterNode(Node):
         value = float(self.get_parameter(name).value)
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f'{name} must be finite and positive')
+        return value
+
+    def _nonnegative(self, name: str) -> float:
+        value = float(self.get_parameter(name).value)
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f'{name} must be finite and nonnegative')
         return value
 
     def _callback(self, message: ControlDebug) -> None:

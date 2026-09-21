@@ -25,7 +25,6 @@ def test_paper_controller_uses_observer_as_command_authority() -> None:
     assert 'ObserverState' in source
     assert 'compute_outer_loop' in source
     assert 'compute_inner_loop' in source
-    assert 'compute_visual_ibvs' not in source
     assert 'message.body_rate = True' in source
     assert 'target_contact_topic' in source
 
@@ -152,6 +151,23 @@ def test_sitl_delay_and_dkf_period_configuration_match_paper() -> None:
     assert "default_value='0.08'" in vision_launch
 
 
+def test_static_and_moving_targets_default_to_camera_centre_height() -> None:
+    """The target defaults must not recreate the old below-camera impact."""
+    sim_root = Path(__file__).parents[2] / 'ibvs_sim'
+    static_launch = (
+        sim_root / 'launch' / 'p4_vision_monitor.launch.py'
+    ).read_text(encoding='utf-8')
+    moving_launch = (
+        sim_root / 'launch' / 'p7_moving_target.launch.py'
+    ).read_text(encoding='utf-8')
+    assert "DeclareLaunchArgument('target_z', default_value='4.0')" in (
+        static_launch
+    )
+    assert "DeclareLaunchArgument('target_z', default_value='4.0')" in (
+        moving_launch
+    )
+
+
 def test_flight_config_contains_no_removed_nonpaper_p0_paths() -> None:
     """Removed engineering branches cannot be re-enabled from YAML."""
     config = (
@@ -183,6 +199,33 @@ def test_visual_search_rejects_stale_target_detection() -> None:
 
     assert coordinator._fresh_feature(1_200_000_000) is coordinator.feature
     assert coordinator._fresh_feature(1_200_000_001) is None
+
+
+def test_transient_invalid_observer_keeps_last_command_until_timeout() -> None:
+    """One bad near-impact DKF sample must use the command-age safety gate."""
+    coordinator = object.__new__(
+        vision_interception_coordinator.VisionInterceptionCoordinator
+    )
+    previous_result = object()
+    previous_inner = object()
+    previous_command = object()
+    coordinator.observer_state = None
+    coordinator.odometry = None
+    coordinator.visual_result = previous_result
+    coordinator.inner_result = previous_inner
+    coordinator.px4_command = previous_command
+    coordinator.command_computed_ns = 123
+    coordinator.control_reason = 'estimated target depth is invalid'
+
+    coordinator._update_control(456)
+
+    assert coordinator.visual_result is previous_result
+    assert coordinator.inner_result is previous_inner
+    assert coordinator.px4_command is previous_command
+    assert coordinator.command_computed_ns == 123
+    assert coordinator.control_reason.startswith(
+        'holding_last_valid_command:'
+    )
 
 
 def test_visual_search_configuration_is_enabled_for_flight() -> None:

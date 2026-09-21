@@ -47,10 +47,6 @@ class PaperStateObserverNode(Node):
             ),
             minimum_depth_m=self._positive('minimum_depth_m'),
             maximum_dt_s=self._positive('maximum_dt_s'),
-            covariance_floor=self._positive('covariance_floor'),
-            maximum_image_innovation_nis=self._positive(
-                'maximum_image_innovation_nis'
-            ),
             dkf_delay_steps=self._nonnegative_integer(
                 'dkf_delay_steps'
             ),
@@ -168,8 +164,6 @@ class PaperStateObserverNode(Node):
         )
         self.declare_parameter('minimum_depth_m', 0.25)
         self.declare_parameter('maximum_dt_s', 0.05)
-        self.declare_parameter('covariance_floor', 1e-12)
-        self.declare_parameter('maximum_image_innovation_nis', 9.21)
         # The paper's practical DKF runs at 50 Hz and reports about 80 ms of
         # imaging/processing delay: D = round(0.080 * 50) = 4 DKF periods.
         # The 200 Hz IMU contributes four propagation substeps per period.

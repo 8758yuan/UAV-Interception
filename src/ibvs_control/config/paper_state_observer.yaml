@@ -14,7 +14,7 @@ paper_state_observer:
 
     # Paper gives x(0), P, Q, and R as observer inputs but does not publish
     # numerical values. The initial depth is a calibrated experiment prior,
-    # so P must not tell the EKF that monocular pixel residuals may freely
+    # so P must not tell the DKF that monocular pixel residuals may freely
     # replace it with a many-metre range correction.
     initial_camera_depth_m: 12.0
     initial_v_r_e: [0.0, 0.0, 0.0]
@@ -29,10 +29,6 @@ paper_state_observer:
                               0.0, -1.0, 0.0]
     minimum_depth_m: 0.25
     maximum_dt_s: 0.05
-    covariance_floor: 1.0e-12
-    # Chi-square gate for the two-dimensional historical-image innovation.
-    # It rejects anomalous frames at k-D before their correction is replayed.
-    maximum_image_innovation_nis: 9.21
 
     # Paper flight delay is about 80 ms.  At the paper/project DKF rate of
     # 50 Hz this is D=4 filter periods.  Each period groups the 200 Hz IMU

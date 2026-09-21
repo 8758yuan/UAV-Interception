@@ -138,7 +138,7 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument('confirmation_token', default_value=''),
             DeclareLaunchArgument('record_bag', default_value='true'),
-            DeclareLaunchArgument('speed_limit_m_s', default_value='7.0'),
+            DeclareLaunchArgument('speed_limit_m_s', default_value='21.0'),
             DeclareLaunchArgument(
                 'interception_tilt_limit_deg', default_value='55.0'
             ),

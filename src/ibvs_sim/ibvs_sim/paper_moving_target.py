@@ -134,7 +134,7 @@ class PaperMovingTarget(Node):
         self.declare_parameter('pattern', 'figure8')
         self.declare_parameter('origin_x_m', 12.0)
         self.declare_parameter('origin_y_m', 0.0)
-        self.declare_parameter('origin_z_m', 3.0)
+        self.declare_parameter('origin_z_m', 4.0)
         self.declare_parameter('speed_m_s', 5.0)
         self.declare_parameter('radius_x_m', 4.0)
         self.declare_parameter('radius_y_m', 2.0)

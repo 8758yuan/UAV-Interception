@@ -1,4 +1,4 @@
-"""18-state delayed EKF from the paper's Appendix B and C equations."""
+"""18-state delayed Kalman observer from the paper's Appendix B and C."""
 
 from dataclasses import dataclass
 import math
@@ -94,8 +94,6 @@ class ObserverConfig:
     )
     minimum_depth_m: float = 0.25
     maximum_dt_s: float = 0.05
-    covariance_floor: float = 1e-12
-    maximum_image_innovation_nis: float = 9.21
     dkf_delay_steps: int = 0
 
     def validate(self) -> None:
@@ -114,8 +112,6 @@ class ObserverConfig:
         for name in (
             'minimum_depth_m',
             'maximum_dt_s',
-            'covariance_floor',
-            'maximum_image_innovation_nis',
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value <= 0.0:
@@ -157,7 +153,7 @@ class _DkfCycleRecord:
 
 
 class PaperStateObserver:
-    """EKF using Appendix B propagation and the paper's delayed update."""
+    """DKF using the paper's Appendix B propagation and delayed update."""
 
     def __init__(
         self,
@@ -448,38 +444,24 @@ class PaperStateObserver:
         H[:, IMAGE_SLICE] = np.eye(MEASUREMENT_DIM)
         innovation = measurement - H @ x
         innovation_covariance = H @ covariance @ H.T + self._R
-        innovation_nis = float(
-            innovation.T
-            @ np.linalg.solve(innovation_covariance, innovation)
-        )
         self.innovation_norm = float(np.linalg.norm(innovation))
-        # Reject a frame that is too far from the image predicted at the same
-        # epoch (current for D=0, historical for D>0).  The paper equations
-        # remain unchanged for accepted measurements.
-        if innovation_nis > self.config.maximum_image_innovation_nis:
-            return self.snapshot()
+        # Solve the right-sided system without forming an explicit inverse:
+        # K = P H^T S^{-1}, exactly as in paper equation (36).
         gain = np.linalg.solve(
-            innovation_covariance,
-            H @ covariance,
+            innovation_covariance.T,
+            (covariance @ H.T).T,
         ).T
         corrected = x + gain @ innovation
         corrected[Q_SLICE] = _normalize_quaternion(
             corrected[Q_SLICE],
             reference=x[Q_SLICE],
         )
-        identity = np.eye(STATE_DIM)
-        residual_map = identity - gain @ H
-        # Joseph form is algebraically equivalent to (35), while preserving
-        # symmetry and positive semidefiniteness under finite precision.
-        corrected_covariance = (
-            residual_map @ covariance @ residual_map.T
-            + gain @ self._R @ gain.T
-        )
+        # Keep the covariance update exactly as written in paper equation
+        # (35).  The Joseph form and covariance regularization are not part of
+        # the paper's DKF algorithm.
+        corrected_covariance = (np.eye(STATE_DIM) - gain @ H) @ covariance
         self.x = corrected
-        self.P = _stabilize_covariance(
-            corrected_covariance,
-            self.config.covariance_floor,
-        )
+        self.P = corrected_covariance
         self.correction_count += 1
         return self.snapshot()
 
@@ -494,10 +476,6 @@ class PaperStateObserver:
         """Predict arrays without changing counters or recording history."""
         predicted, F, G = self._appendix_prediction(x, gyro, accel, dt_s)
         predicted_covariance = F @ covariance @ F.T + G @ self._Q @ G.T
-        predicted_covariance = _stabilize_covariance(
-            predicted_covariance,
-            self.config.covariance_floor,
-        )
         return predicted, predicted_covariance, F, G
 
     def snapshot(self) -> ObserverSnapshot:
@@ -766,15 +744,3 @@ def _finite_vector(
     if result.shape != (length,) or not np.all(np.isfinite(result)):
         raise ValueError(f'{name} must contain {length} finite values')
     return result
-
-
-def _stabilize_covariance(covariance: np.ndarray, floor: float) -> np.ndarray:
-    symmetric = 0.5 * (covariance + covariance.T)
-    if symmetric.shape != (STATE_DIM, STATE_DIM):
-        raise ValueError('covariance must have shape 18x18')
-    if not np.all(np.isfinite(symmetric)):
-        raise ValueError('covariance must remain finite')
-    minimum_eigenvalue = float(np.linalg.eigvalsh(symmetric)[0])
-    if minimum_eigenvalue < floor:
-        symmetric += np.eye(STATE_DIM) * (floor - minimum_eigenvalue)
-    return symmetric

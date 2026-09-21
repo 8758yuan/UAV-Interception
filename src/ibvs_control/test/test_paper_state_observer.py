@@ -285,10 +285,8 @@ def test_consecutive_delayed_updates_preserve_overlapping_history() -> None:
     )
 
 
-def test_image_innovation_gate_rejects_anomalous_current_frame() -> None:
-    observer = PaperStateObserver(
-        config=ObserverConfig(maximum_image_innovation_nis=0.1)
-    )
+def test_image_measurement_is_applied_without_extra_innovation_gate() -> None:
+    observer = PaperStateObserver()
     observer.initialize_from_image(
         (1.0, 0.0, 0.0, 0.0),
         (0.0, 0.0),
@@ -296,9 +294,30 @@ def test_image_innovation_gate_rejects_anomalous_current_frame() -> None:
     )
     before = observer.snapshot()
     after = observer.correct_image((0.04, 0.0))
-    assert after.correction_count == 0
-    assert after.state.image_xy == pytest.approx(before.state.image_xy)
+    assert after.correction_count == 1
+    assert after.state.image_xy[0] > before.state.image_xy[0]
     assert after.innovation_norm == pytest.approx(0.04)
+
+
+def test_image_covariance_uses_paper_equation_35() -> None:
+    observer = _initialized_observer()
+    before = observer.snapshot()
+    H = np.zeros((2, STATE_DIM))
+    H[:, IMAGE_SLICE] = np.eye(2)
+    measurement = np.array((0.04, -0.03))
+    innovation = measurement - H @ before.state.as_vector()
+    measurement_covariance = H @ before.covariance @ H.T
+    measurement_covariance += np.eye(2) * observer.noise.image_noise_std ** 2
+    gain = np.linalg.solve(
+        measurement_covariance.T,
+        (before.covariance @ H.T).T,
+    ).T
+    expected = (np.eye(STATE_DIM) - gain @ H) @ before.covariance
+
+    after = observer.correct_image(measurement)
+
+    assert after.covariance == pytest.approx(expected)
+    assert after.innovation_norm == pytest.approx(np.linalg.norm(innovation))
 
 
 def test_image_innovation_updates_observable_imu_bias_states() -> None:
@@ -311,8 +330,6 @@ def test_image_innovation_updates_observable_imu_bias_states() -> None:
             0.01,
         )
     before = observer.snapshot().state
-    # Stay inside the configured two-dimensional NIS gate so this test
-    # exercises the accepted-update cross-covariances.
     after = observer.correct_image((0.04, -0.03)).state
     assert np.linalg.norm(after.b_gyr_b) > np.linalg.norm(before.b_gyr_b)
     assert np.linalg.norm(after.b_acc_b) > np.linalg.norm(before.b_acc_b)

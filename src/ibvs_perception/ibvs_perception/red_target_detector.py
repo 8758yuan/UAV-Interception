@@ -19,6 +19,7 @@ from std_msgs.msg import Empty
 
 from ibvs_perception.camera_geometry import (
     CameraIntrinsics,
+    PAPER_HORIZONTAL_FOV_RAD,
     intrinsics_from_horizontal_fov,
     normalized_pixel,
     red_hsv_mask,
@@ -35,7 +36,9 @@ class RedTargetDetector(Node):
         self.declare_parameter('feature_topic', '/interception/vision/raw_feature')
         self.declare_parameter('fallback_width', 1280)
         self.declare_parameter('fallback_height', 960)
-        self.declare_parameter('fallback_horizontal_fov_rad', 1.74)
+        self.declare_parameter(
+            'fallback_horizontal_fov_rad', PAPER_HORIZONTAL_FOV_RAD
+        )
         self.declare_parameter('minimum_area_px', 20.0)
         self.declare_parameter('detector_stride', 2)
         self.declare_parameter('image_delay_s', 0.08)

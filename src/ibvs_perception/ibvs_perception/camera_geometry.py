@@ -7,6 +7,11 @@ from typing import Iterable, Tuple
 import numpy as np
 
 
+# The paper reports a 120-degree horizontal-FOV front camera in the flight
+# experiments.  Keep the fallback calibration equal to that baseline.
+PAPER_HORIZONTAL_FOV_RAD = 2.0 * math.pi / 3.0
+
+
 @dataclass(frozen=True)
 class CameraIntrinsics:
     """Rectified pinhole intrinsics for a right-down-forward optical frame."""

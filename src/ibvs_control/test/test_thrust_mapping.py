@@ -57,3 +57,40 @@ def test_invalid_normalized_inputs_are_rejected(value: float) -> None:
     """Only the documented normalized magnitude range is accepted."""
     with pytest.raises(ValueError):
         px4_normalized_to_newtons(value, CONFIG)
+
+
+def test_velocity_motor_mapping_matches_paper_twr_calibration() -> None:
+    config = ThrustMappingConfig(
+        mass_kg=2.1143076923,
+        hover_thrust_normalized=0.5219057941,
+        maximum_thrust_n=3.0 * 2.0 * 9.80665,
+        thrust_curve_exponent=2.0,
+        actuator_minimum_fraction=0.15,
+    )
+    weight = config.mass_kg * config.gravity_m_s2
+    hover = newtons_to_px4_normalized(weight, config)
+    expected = (
+        math.sqrt(weight / config.maximum_thrust_n) - 0.15
+    ) / 0.85
+    assert hover.magnitude == pytest.approx(expected)
+    assert hover.magnitude == pytest.approx(config.hover_thrust_normalized)
+    assert px4_normalized_to_newtons(hover.magnitude, config) == pytest.approx(
+        weight
+    )
+
+
+def test_velocity_motor_mapping_includes_px4_idle_offset() -> None:
+    config = ThrustMappingConfig(
+        mass_kg=2.1143076923,
+        hover_thrust_normalized=0.5219057941,
+        maximum_thrust_n=58.8399,
+        thrust_curve_exponent=2.0,
+        actuator_minimum_fraction=0.15,
+    )
+    mapped = newtons_to_px4_normalized(15.45, config)
+    expected = (math.sqrt(15.45 / 58.8399) - 0.15) / 0.85
+    assert mapped.magnitude == pytest.approx(expected)
+    assert mapped.magnitude < math.sqrt(15.45 / 58.8399)
+    assert px4_normalized_to_newtons(mapped.magnitude, config) == pytest.approx(
+        15.45
+    )

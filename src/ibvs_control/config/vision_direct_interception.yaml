@@ -29,9 +29,9 @@ vision_interception_coordinator:
 
     timer_period_s: 0.005
     outer_loop_hz: 50.0
-    # The static target centre is at 3 m. Start one metre above it so the
-    # paper LOS law produces a descending collision path rather than climbing
-    # into the target from below.
+    # Keep the takeoff altitude equal to the static target centre height so
+    # the camera optical axis, rather than the landing gear, is the impact
+    # axis. The camera is rigidly mounted at the vehicle body height.
     target_altitude_m: 4.0
     target_yaw_rad: 1.57079632679
     prestream_duration_s: 2.0
@@ -62,27 +62,34 @@ vision_interception_coordinator:
     paper_k1: 0.05
     paper_k2: 3.0
     safe_los_angle_deg: 60.0
-    # Negative pitch means the target stays below the interceptor. At the
-    # nominal 12 m start, -5 deg corresponds to about 1.05 m height margin.
-    designed_los_pitch_deg: -5.0
+    # Zero pitch makes the target centre coincide with the camera optical
+    # axis. A nonzero value deliberately produces an off-centre impact and is
+    # therefore not suitable for the camera-centre interception trial.
+    designed_los_pitch_deg: 0.0
     # Optical camera right/down/forward -> body FLU forward/left/up.
     camera_to_body_rotation: [0.0, 0.0, 1.0,
                               -1.0, 0.0, 0.0,
                               0.0, -1.0, 0.0]
-    mass_kg: 2.0
-    thrust_max_n: 26.9784
-    # Paper model: F_drag^e = -R_b^e D R_e^b v^e,
-    # D = diag(d_x, d_y, d_z), units kg/s. The paper does not publish D;
-    # these are conservative initial values for the x500 SITL vehicle.
-    drag_coefficients_b_kg_s: [0.08, 0.12, 0.15]
-    hover_thrust_normalized: 0.727
+    # Gazebo total: 2.0 kg body + 4*0.016076923 kg rotors + 0.05 kg camera.
+    mass_kg: 2.1143076923
+    # Four rotors at 1000 rad/s and motorConstant=1.4709975e-05.
+    thrust_max_n: 58.8399
+    # Linearized equivalent of the four x500 rotor-drag terms at hover after
+    # the T/W=3 propulsion calibration. Rotor drag is transverse; d_z=0.
+    drag_coefficients_b_kg_s: [0.1862366, 0.1862366, 0.0]
+    # PX4 maps normalized output u to 150 + 850*u rad/s. Gazebo then applies
+    # the quadratic velocity motor model. Including the 150 rad/s offset gives
+    # u_hover=(sqrt(mg/Tmax)-0.15)/0.85.
+    hover_thrust_normalized: 0.5219057941
+    thrust_curve_exponent: 2.0
+    actuator_minimum_fraction: 0.15
     omega_limit_rad_s: 0.20
 
     # 1280x960 image. Area remains diagnostic; only verified Gazebo contact
     # plus the green-material confirmation commits the impact transition.
     image_area_px: 1228800.0
-    # Camera-only acquisition. ALIGN targets the designed -5 deg LOS rather
-    # than the optical centre, preserving the above-target height margin.
+    # Camera-only acquisition. ALIGN targets the designed zero-pitch LOS,
+    # which is the optical centreline used by the impact geometry.
     # After takeoff settles, stale/missing detections keep the vehicle in a
     # position-hold yaw scan; interception cannot start from an old frame.
     visual_feature_timeout_s: 0.20
@@ -97,11 +104,15 @@ vision_interception_coordinator:
 
     mission_timeout_s: 60.0
     interception_telemetry_timeout_s: 0.5
-    command_timeout_s: 0.1
+    # Bridge the expected DKF minimum-depth singularity immediately before
+    # contact while retaining a bounded stale-command safety gate.
+    command_timeout_s: 0.20
     # The strict paper law initially asks for about 58 deg at 12 m. The
     # simulated vehicle is expected to hit before reaching that attitude;
     # these remain termination limits rather than command-shaping limits.
-    speed_limit_m_s: 7.0
+    # Paper static-target flight experiments reached 21 m/s. This is a
+    # vehicle-level termination limit, not a modification of Eq. (19).
+    speed_limit_m_s: 21.0
     interception_tilt_limit_deg: 55.0
     minimum_barrier_margin: 0.02
     # Preserve the measured velocity briefly so the setpoint is continuous and

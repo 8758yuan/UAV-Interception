@@ -53,14 +53,14 @@ def test_observer_state_and_onboard_attitude_drive_paper_controller() -> None:
             rclpy.shutdown()
 
 
-def test_static_baseline_uses_a_downward_designed_los() -> None:
-    """The target is held below the interceptor before the descending run."""
+def test_static_baseline_uses_camera_centre_designed_los() -> None:
+    """The static target is commanded along the camera optical axis."""
     rclpy.init()
     node = None
     try:
         node = VisionInterceptionCoordinator()
-        assert node.designed_los_b[2] < 0.0
-        assert node.designed_image_xy[1] > 0.0
+        assert node.designed_los_b == pytest.approx((1.0, 0.0, 0.0))
+        assert node.designed_image_xy == pytest.approx((0.0, 0.0))
     finally:
         if node is not None:
             node.destroy_node()

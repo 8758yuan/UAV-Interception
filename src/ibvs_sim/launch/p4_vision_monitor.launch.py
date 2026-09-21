@@ -99,7 +99,10 @@ def generate_launch_description() -> LaunchDescription:
             # mono_cam points along Gazebo +X for the x500_mono_cam model.
             DeclareLaunchArgument('target_x', default_value='12.0'),
             DeclareLaunchArgument('target_y', default_value='0.0'),
-            DeclareLaunchArgument('target_z', default_value='3.0'),
+            # The x500_mono_cam optical centre is at the vehicle body height;
+            # vision_direct_interception targets 4 m, so keep the balloon
+            # centre on that same horizontal plane by default.
+            DeclareLaunchArgument('target_z', default_value='4.0'),
             DeclareLaunchArgument(
                 'vehicle_model_name', default_value='x500_mono_cam_0'
             ),
