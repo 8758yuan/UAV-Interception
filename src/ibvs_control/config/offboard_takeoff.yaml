@@ -1,7 +1,9 @@
 offboard_takeoff:
   ros__parameters:
+    # Gazebo仿真使用true；实机使用false。
     use_sim_time: true
 
+    # PX4通信话题，除非PX4消息版本或命名空间改变，否则不要修改。
     topics:
       offboard_control_mode: /fmu/in/offboard_control_mode
       trajectory_setpoint: /fmu/in/trajectory_setpoint
@@ -12,33 +14,45 @@ offboard_takeoff:
       vehicle_land_detected: /fmu/out/vehicle_land_detected
       vehicle_command_ack: /fmu/out/vehicle_command_ack_v1
 
+    # 控制循环周期(s)；越小发布越快，但CPU占用更高。
     timer_period_s: 0.1
+    # 相对home点的起飞高度(m)和机头偏航角(rad)。
     target_altitude_m: 2.0
     target_yaw_rad: 0.0
 
-    # Feedback-driven mission timing.
+    # 进入Offboard前的设定点预发送时间(s)。
     prestream_duration_s: 2.0
+    # PX4命令重发周期(s)。
     command_retry_period_s: 1.0
+    # 各阶段超时(s)；过小可能在PX4尚未响应时中止任务。
     init_timeout_s: 15.0
     offboard_timeout_s: 10.0
     arm_timeout_s: 10.0
     takeoff_timeout_s: 30.0
+    # 起飞稳定后的悬停时间(s)。
     hold_duration_s: 10.0
     land_timeout_s: 30.0
+    # PX4反馈超过该时间未更新则中止(s)。
     telemetry_timeout_s: 1.0
+    # 高度和速度满足条件后持续稳定的时间(s)。
     altitude_settle_time_s: 1.0
 
-    # Completion tolerances and conservative P1 safety limits.
+    # 起飞完成判据：高度误差(m)和垂直速度(m/s)。
     altitude_tolerance_m: 0.15
     vertical_speed_tolerance_m_s: 0.30
+    # 安全围栏：最大水平距离(m)、最高/最低相对高度(m)。
     max_horizontal_distance_m: 3.0
     max_relative_altitude_m: 4.0
     min_hold_altitude_m: 0.5
+    # 最大机体倾角(deg)，超过后请求降落。
     max_tilt_deg: 35.0
 
+    # true：悬停结束后自动降落；false：持续悬停。
     auto_land: true
+    # true：任务完成后退出节点。
     stop_on_complete: false
 
+    # MAVLink系统/组件编号，单机默认保持1。
     target_system: 1
     target_component: 1
     source_system: 1

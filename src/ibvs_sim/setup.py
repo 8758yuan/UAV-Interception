@@ -22,8 +22,8 @@ setup(
             glob('launch/*.launch.py'),
         ),
         (
-            os.path.join('share', package_name, 'models'),
-            glob('models/*.sdf'),
+            os.path.join('share', package_name, 'target_models'),
+            glob('target_models/*.sdf'),
         ),
     ],
     install_requires=['setuptools'],

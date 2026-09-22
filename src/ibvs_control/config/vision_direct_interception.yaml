@@ -1,130 +1,161 @@
 vision_interception_coordinator:
   ros__parameters:
+    # 调参建议：先标定物理参数，再调视觉搜索，最后小步调整paper_k1/k2。
+    # 每次只改一组参数，并保留rosbag用于对比。
+    # 使用Gazebo仿真时钟。
     use_sim_time: true
 
-    # Explicit opt-in remains mandatory for a command-producing trial.
+    # 是否允许本节点向PX4发送实际飞行控制指令；false为仅观测/调试模式。
     enable_flight_commands: false
+    # 启用实际控制时必须填写的安全确认字符串。
     confirmation_token: ''
-    # Paper baseline: p_r, v_r, and image state all come from the DKF.
-
+    # PX4 Offboard控制模式话题。
     topics:
+      # 发布位置/角速度控制模式。
       offboard_control_mode: /fmu/in/offboard_control_mode
+      # 发布起飞、视觉搜索和恢复阶段的位置设定点。
       trajectory_setpoint: /fmu/in/trajectory_setpoint
+      # 发布解锁、切换Offboard和降落等命令。
       vehicle_command: /fmu/in/vehicle_command
+      # 发布拦截阶段的机体角速度设定点。
       vehicle_rates_setpoint: /fmu/in/vehicle_rates_setpoint
+      # PX4本地NED位置和速度反馈。
       vehicle_local_position: /fmu/out/vehicle_local_position_v1
+      # PX4飞行状态、解锁状态和failsafe反馈。
       vehicle_status: /fmu/out/vehicle_status_v4
+      # PX4姿态反馈，用于倾角安全检查。
       vehicle_attitude: /fmu/out/vehicle_attitude
+      # PX4里程计反馈，用于速度和姿态计算。
       vehicle_odometry: /fmu/out/vehicle_odometry
+      # PX4着陆检测反馈。
       vehicle_land_detected: /fmu/out/vehicle_land_detected
+      # PX4命令确认反馈。
       vehicle_command_ack: /fmu/out/vehicle_command_ack_v1
 
-    # Raw image is used for acquisition/diagnostics. The paper controller uses
-    # only the observer output below.
+    # 原始视觉特征输入，仅用于目标搜索、对准和诊断。
     feature_topic: /interception/vision/raw_feature
+    # 延迟状态观测器输出；主动拦截控制只使用该状态。
     observer_topic: /interception/observer/state
+    # 请求观测器重新初始化的服务话题。
     observer_reset_topic: /interception/observer/reset
+    # 控制调试信息输出话题。
     debug_topic: /interception/control/debug
+    # 目标接触/颜色确认话题，确认后才允许结束拦截。
     target_contact_topic: /interception/target/green_confirmed
 
+    # 主控制周期(s)，0.005对应200 Hz；减小会提高CPU负载。
     timer_period_s: 0.005
+    # 论文外环频率(Hz)，当前按论文设为50 Hz。
     outer_loop_hz: 50.0
-    # Keep the takeoff altitude equal to the static target centre height so
-    # the camera optical axis, rather than the landing gear, is the impact
-    # axis. The camera is rigidly mounted at the vehicle body height.
-    target_altitude_m: 4.0
+    # 起飞和初始搜索高度(m)，不要求与目标高度相同。
+    target_altitude_m: 10.0
+    # 起飞阶段目标偏航角(rad)；进入搜索后由视觉搜索接管。
     target_yaw_rad: 1.57079632679
+    # 进入Offboard前连续发布位置设定点的时间，单位s。
     prestream_duration_s: 2.0
+    # 进入拦截角速度控制前连续发布角速度设定点的时间，单位s。
     interception_prestream_duration_s: 0.5
+    # PX4命令重发周期，单位s。
     command_retry_period_s: 1.0
+    # 等待PX4状态初始化的超时时间，单位s。
     init_timeout_s: 15.0
+    # 切换到Offboard模式的超时时间，单位s。
     offboard_timeout_s: 10.0
+    # 解锁超时时间，单位s。
     arm_timeout_s: 10.0
+    # 起飞阶段超时时间，单位s。
     takeoff_timeout_s: 30.0
+    # 起飞后悬停时间(s)；0表示持续等待视觉流程。
     hold_duration_s: 0.0
+    # 降落阶段超时时间，单位s。
     land_timeout_s: 30.0
+    # PX4状态、位置和姿态反馈允许的最大间隔，单位s。
     telemetry_timeout_s: 1.0
+    # 达到高度和速度条件后必须持续稳定的时间，单位s。
     altitude_settle_time_s: 1.0
+    # 起飞任务是否自动请求降落。
     auto_land: false
+    # 任务完成后是否停止本节点。
     stop_on_complete: true
 
+    # 起飞高度误差容限，单位m。
     altitude_tolerance_m: 0.15
+    # 起飞垂直速度容限，单位m/s。
     vertical_speed_tolerance_m_s: 0.30
+    # 起飞/搜索安全围栏：水平距离和相对高度(m)。
     max_horizontal_distance_m: 15.0
-    max_relative_altitude_m: 5.0
+    max_relative_altitude_m: 50.0
     min_hold_altitude_m: 0.5
-    # Paper flight tests report approximately 50 deg peak pitch. Keep the
-    # independent vehicle-level stop above that demonstrated envelope.
+    # 整机最终倾角保护(deg)，应高于interception_tilt_limit_deg。
     max_tilt_deg: 60.0
 
-    # Paper Section III, equations (13), (19), (21)-(23), (26), and (28).
-    # The paper does not publish k1/k2; these are project tuning values.
-    paper_k1: 0.05
-    paper_k2: 3.0
-    safe_los_angle_deg: 60.0
-    # Zero pitch makes the target centre coincide with the camera optical
-    # axis. A nonzero value deliberately produces an off-centre impact and is
-    # therefore not suitable for the camera-centre interception trial.
-    designed_los_pitch_deg: 0.0
-    # Optical camera right/down/forward -> body FLU forward/left/up.
+    # k1、k2、Barrier边界、设计视线和角速度上限统一在
+    # paper_design_parameters.yaml中调整。
+    # 相机到FLU机体系旋转矩阵，按行展开；相机安装不变时勿调。
     camera_to_body_rotation: [0.0, 0.0, 1.0,
                               -1.0, 0.0, 0.0,
                               0.0, -1.0, 0.0]
-    # Gazebo total: 2.0 kg body + 4*0.016076923 kg rotors + 0.05 kg camera.
+    # Gazebo整机质量(kg)，必须与模型一致。
     mass_kg: 2.1143076923
-    # Four rotors at 1000 rad/s and motorConstant=1.4709975e-05.
+    # 最大总推力(N)，必须与电机模型一致。
     thrust_max_n: 58.8399
-    # Linearized equivalent of the four x500 rotor-drag terms at hover after
-    # the T/W=3 propulsion calibration. Rotor drag is transverse; d_z=0.
+    # FLU机体系等效线性阻力(kg/s)，顺序为x/y/z。
     drag_coefficients_b_kg_s: [0.1862366, 0.1862366, 0.0]
-    # PX4 maps normalized output u to 150 + 850*u rad/s. Gazebo then applies
-    # the quadratic velocity motor model. Including the 150 rad/s offset gives
-    # u_hover=(sqrt(mg/Tmax)-0.15)/0.85.
+    # 归一化悬停推力、推力曲线指数和最小输出比例，需成套标定。
     hover_thrust_normalized: 0.5219057941
     thrust_curve_exponent: 2.0
     actuator_minimum_fraction: 0.15
-    omega_limit_rad_s: 0.20
-
-    # 1280x960 image. Area remains diagnostic; only verified Gazebo contact
-    # plus the green-material confirmation commits the impact transition.
+    # 相机总像素数，仅用于目标面积比例诊断。
     image_area_px: 1228800.0
-    # Camera-only acquisition. ALIGN targets the designed zero-pitch LOS,
-    # which is the optical centreline used by the impact geometry.
-    # After takeoff settles, stale/missing detections keep the vehicle in a
-    # position-hold yaw scan; interception cannot start from an old frame.
+    # 视觉特征最大允许延迟(s)；过小易因抖动丢帧，过大可能使用旧目标。
     visual_feature_timeout_s: 0.20
+    # 搜索偏航速度(rad/s)；增大可更快扫一圈，但图像更易模糊。
     visual_search_yaw_rate_rad_s: 0.20
+    # 垂直搜索振幅(m)和周期(s)；振幅必须位于高度围栏内。
+    visual_search_vertical_amplitude_m: 3.0
+    visual_search_vertical_period_s: 20.0
+    # 图像水平/垂直对准增益；增大对准更快，过大会振荡。
     visual_align_yaw_gain_rad_s: 1.2
-    visual_align_vertical_gain_m_s: 0.4
-    visual_align_center_error: 0.08
-    visual_align_release_error: 0.14
+    visual_align_vertical_gain_m_s: 2.0
+    # 对准进入/退出阈值；启动前将目标约束在更靠近图像中心的位置。
+    # release必须大于center以形成滞回。
+    visual_align_center_error: 0.04
+    visual_align_release_error: 0.08
+    # 误差持续满足center阈值的时间(s)，越大越稳但等待更久。
     visual_align_settle_time_s: 0.5
+    # 目标连续丢失多久后重启搜索(s)。
     visual_search_loss_timeout_s: 0.3
-    visual_align_max_vertical_offset_m: 0.6
 
+    # 拦截任务最长持续时间，单位s。
     mission_timeout_s: 60.0
+    # 拦截阶段允许的最大遥测延迟，单位s。
     interception_telemetry_timeout_s: 0.5
-    # Bridge the expected DKF minimum-depth singularity immediately before
-    # contact while retaining a bounded stale-command safety gate.
+    # 拦截控制指令允许的最大延迟(s)，超时触发安全终止。
     command_timeout_s: 0.20
-    # The strict paper law initially asks for about 58 deg at 12 m. The
-    # simulated vehicle is expected to hit before reaching that attitude;
-    # these remain termination limits rather than command-shaping limits.
-    # Paper static-target flight experiments reached 21 m/s. This is a
-    # vehicle-level termination limit, not a modification of Eq. (19).
+    # 拦截阶段最大飞行速度，超过后触发安全中止，单位m/s。
     speed_limit_m_s: 21.0
+    # 拦截阶段最大倾角，超过后触发安全中止，单位deg。
     interception_tilt_limit_deg: 55.0
+    # Barrier安全裕度下限；增大更保守，也更容易提前中止。
     minimum_barrier_margin: 0.02
-    # Preserve the measured velocity briefly so the setpoint is continuous and
-    # the airframe clears the balloon, then use a zero-slope smooth stop.
+    # 碰撞后保持原速度时间(s)，用于越过目标；过长会增加飞行距离。
     post_hit_coast_duration_s: 0.20
+    # 平滑减速时间(s)；增大减速更柔和，但恢复更慢。
     stabilize_duration_s: 3.0
+    # 恢复稳定阶段允许的最大倾角，单位deg。
     stabilize_tilt_tolerance_deg: 8.0
+    # 恢复稳定阶段允许的最大速度，单位m/s。
     recovery_speed_tolerance_m_s: 0.35
+    # 恢复条件必须持续满足的时间，单位s。
     recovery_settle_time_s: 1.0
+    # 恢复稳定超时时间，单位s。
     recovery_timeout_s: 15.0
 
+    # PX4系统编号。
     target_system: 1
+    # PX4组件编号。
     target_component: 1
+    # 发布方系统编号。
     source_system: 1
+    # 发布方组件编号。
     source_component: 1

@@ -67,6 +67,11 @@ def _assign_vector(message, values) -> None:
     message.x, message.y, message.z = (float(value) for value in values)
 
 
+def _clip(value: float, lower: float, upper: float) -> float:
+    """Clamp a scalar without introducing another control dependency."""
+    return min(max(value, lower), upper)
+
+
 class VisionInterceptionCoordinator(OffboardTakeoff):
     """
     Take off and intercept using the paper observer and Section III law.
@@ -143,6 +148,12 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 search_yaw_rate_rad_s=self._float_parameter(
                     'visual_search_yaw_rate_rad_s'
                 ),
+                search_vertical_amplitude_m=self._float_parameter(
+                    'visual_search_vertical_amplitude_m'
+                ),
+                search_vertical_period_s=self._float_parameter(
+                    'visual_search_vertical_period_s'
+                ),
                 align_yaw_gain_rad_s=self._float_parameter(
                     'visual_align_yaw_gain_rad_s'
                 ),
@@ -160,9 +171,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 ),
                 target_loss_timeout_s=self._float_parameter(
                     'visual_search_loss_timeout_s'
-                ),
-                maximum_vertical_offset_m=self._float_parameter(
-                    'visual_align_max_vertical_offset_m'
                 ),
             )
         )
@@ -378,22 +386,25 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         )
         self.declare_parameter('image_area_px', 1228800.0)
         self.declare_parameter('visual_feature_timeout_s', 0.20)
-        self.declare_parameter('visual_search_yaw_rate_rad_s', 0.20)
+        self.declare_parameter('visual_search_yaw_rate_rad_s', 0.35)
+        self.declare_parameter('visual_search_vertical_amplitude_m', 3.0)
+        self.declare_parameter('visual_search_vertical_period_s', 20.0)
         self.declare_parameter('visual_align_yaw_gain_rad_s', 1.2)
-        self.declare_parameter('visual_align_vertical_gain_m_s', 0.4)
+        self.declare_parameter('visual_align_vertical_gain_m_s', 1.0)
         self.declare_parameter('visual_align_center_error', 0.08)
         self.declare_parameter('visual_align_release_error', 0.14)
         self.declare_parameter('visual_align_settle_time_s', 0.5)
         self.declare_parameter('visual_search_loss_timeout_s', 0.3)
-        self.declare_parameter('visual_align_max_vertical_offset_m', 0.6)
         self.declare_parameter('omega_limit_rad_s', 0.20)
         self.declare_parameter('outer_loop_hz', 50.0)
         self.declare_parameter('interception_prestream_duration_s', 1.0)
         self.declare_parameter('mission_timeout_s', 60.0)
         self.declare_parameter('interception_telemetry_timeout_s', 0.5)
         self.declare_parameter('command_timeout_s', 0.2)
+        # 拦截阶段最大飞行速度，单位m/s；超过后由安全门中止任务。
         self.declare_parameter('speed_limit_m_s', 21.0)
-        self.declare_parameter('interception_tilt_limit_deg', 18.0)
+        # 拦截阶段最大倾角，单位deg；超过后由安全门中止任务。
+        self.declare_parameter('interception_tilt_limit_deg', 55.0)
         self.declare_parameter('minimum_barrier_margin', 0.02)
         self.declare_parameter('post_hit_coast_duration_s', 0.20)
         self.declare_parameter('stabilize_duration_s', 3.0)
@@ -823,14 +834,14 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
     def _publish_visual_acquisition_setpoint(self) -> None:
         """Hold position while search/alignment changes only yaw and height."""
         command = self.acquisition_command
-        target_z = self.state_machine.target_z_ned_m
         home_x = self.state_machine.home_x
         home_y = self.state_machine.home_y
+        home_z = self.state_machine.home_z
         if (
             command is None
-            or target_z is None
             or home_x is None
             or home_y is None
+            or home_z is None
         ):
             return
         mode = OffboardControlMode()
@@ -839,11 +850,17 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.offboard_pub.publish(mode)
         setpoint = TrajectorySetpoint()
         setpoint.timestamp = self._timestamp_us()
-        setpoint.position = [
-            home_x,
-            home_y,
-            target_z + command.vertical_offset_m,
-        ]
+        # Acquisition may request a large vertical correction for a target
+        # above or below the initial takeoff plane.  Clamp the actual PX4
+        # setpoint to the same altitude envelope used by the flight state
+        # machine, so a bad or lost image cannot command outside the fence.
+        relative_altitude = _clip(
+            self.state_machine.config.target_altitude_m
+            - command.vertical_offset_m,
+            self.state_machine.config.min_hold_altitude_m,
+            self.state_machine.config.max_relative_altitude_m,
+        )
+        setpoint.position = [home_x, home_y, home_z - relative_altitude]
         setpoint.velocity = [math.nan, math.nan, math.nan]
         setpoint.acceleration = [math.nan, math.nan, math.nan]
         setpoint.jerk = [math.nan, math.nan, math.nan]

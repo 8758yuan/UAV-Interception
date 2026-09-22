@@ -215,7 +215,8 @@ class OffboardTakeoff(Node):
             'land_timeout_s': 30.0,
             'telemetry_timeout_s': 1.0,
             'max_horizontal_distance_m': 3.0,
-            'max_relative_altitude_m': 4.0,
+            # 起飞/搜索阶段相对home点允许的最大高度，单位m。
+            'max_relative_altitude_m': 50.0,
             'min_hold_altitude_m': 0.5,
             'max_tilt_deg': 35.0,
         }

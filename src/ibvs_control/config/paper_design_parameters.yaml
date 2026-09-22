@@ -1,0 +1,50 @@
+vision_interception_coordinator:
+  ros__parameters:
+    # 论文式(16)：期望相对速度v_rd=-k1*p_r。
+    # k1越大，期望接近速度越高；过大会导致接近过快。
+    paper_k1: 0.05
+
+    # 论文式(19)：相对速度误差反馈增益。
+    # k2越大，速度修正和制动越强；过大会在接触前急刹。
+    paper_k2: 3.0
+
+    # 论文式(12)的Barrier边界k_b，本项目用角度配置：
+    # k_b=1-cos(safe_los_angle_deg)。45 deg可让控制器更早抑制目标偏移。
+    safe_los_angle_deg: 30.0
+
+    # 论文中的设计视线n_td；0 deg表示沿前视相机光轴拦截。
+    designed_los_pitch_deg: 0.0
+
+    # 论文式(29)的角速度饱和上限omega_m(rad/s)。
+    # 越大姿态响应越快，但会在拦截启动时使目标迅速偏离图像中心。
+    omega_limit_rad_s: 0.30
+
+paper_state_observer:
+  ros__parameters:
+    # 由单目图像构造初始相对位置p_r(0)时使用的光轴深度(m)。
+    # 这是本项目的工程初始化参数；论文仅假设完整x(0)已知。
+    initial_camera_depth_m: 25.0
+    # 以下是论文x(0)中的初始相对速度与IMU偏置。
+    initial_v_r_e: [0.0, 0.0, 0.0]
+    initial_b_gyr_b: [0.0, 0.0, 0.0]
+    initial_b_acc_b: [0.0, 0.0, 0.0]
+
+    # 初始协方差P(0)的标准差形式；越大表示越不相信初始先验。
+    initial_q_std: 0.005
+    initial_position_std_m: 0.5
+    initial_velocity_std_m_s: 0.2
+    initial_image_std: 0.02
+    initial_gyro_bias_std_rad_s: 0.005
+    initial_accel_bias_std_m_s2: 0.05
+
+    # 过程噪声Q的标准差形式；增大后跟踪更灵敏，但估计更抖动。
+    gyro_noise_std_rad_s: 0.015
+    accel_noise_std_m_s2: 0.15
+
+    # 图像测量噪声R的标准差形式；增大后更少相信视觉测量。
+    image_noise_std: 0.015
+
+    # 论文延迟周期D及DKF频率。应满足D≈图像总延迟×DKF频率。
+    # 当前80 ms×50 Hz=4。
+    dkf_delay_steps: 4
+    dkf_update_rate_hz: 50.0

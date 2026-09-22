@@ -1,7 +1,9 @@
 body_rate_test:
   ros__parameters:
+    # Gazebo仿真使用true；实机使用false。
     use_sim_time: true
 
+    # PX4通信话题，一般不需要调整。
     topics:
       offboard_control_mode: /fmu/in/offboard_control_mode
       trajectory_setpoint: /fmu/in/trajectory_setpoint
@@ -14,11 +16,13 @@ body_rate_test:
       vehicle_land_detected: /fmu/out/vehicle_land_detected
       vehicle_command_ack: /fmu/out/vehicle_command_ack_v1
 
-    # Publish rates at 200 Hz, matching the intended controller interface.
+    # 控制周期0.005 s对应200 Hz。
     timer_period_s: 0.005
+    # 测试起飞高度(m)和偏航角(rad)。
     target_altitude_m: 2.0
     target_yaw_rad: 0.0
 
+    # 任务时序与超时(s)；过小可能导致正常响应被判为超时。
     prestream_duration_s: 2.0
     command_retry_period_s: 1.0
     init_timeout_s: 15.0
@@ -28,50 +32,53 @@ body_rate_test:
     hold_duration_s: 10.0
     land_timeout_s: 30.0
     telemetry_timeout_s: 1.0
+    # 达到起飞判据后需持续稳定的时间(s)。
     altitude_settle_time_s: 1.0
 
+    # 起飞完成判据：高度误差(m)与垂直速度(m/s)。
     altitude_tolerance_m: 0.15
     vertical_speed_tolerance_m_s: 0.30
+    # 测试安全围栏：水平距离/相对高度(m)与倾角(deg)。
     max_horizontal_distance_m: 3.0
     max_relative_altitude_m: 4.0
     min_hold_altitude_m: 0.5
     max_tilt_deg: 20.0
 
-    # A separate test node controls when landing begins.
+    # 由角速度测试流程决定降落时机，不在起飞状态机中自动降落。
     auto_land: false
-    # Write the result only after a normal landing or a safely completed abort,
-    # then exit so ros2 launch and an optional rosbag recorder can terminate.
+    # 完成或安全中止后写入报告并退出。
     stop_on_complete: true
 
-    # launch arguments override these for each acceptance trial.
+    # 试验编号和报告目录，可由launch参数覆盖。
     trial_id: manual
     results_directory: results/p1
 
-    # Calibrated from the position-controller hover segment in PX4 ULog.
+    # 标定的PX4归一化悬停推力；需随质量/电机模型重新标定。
     hover_thrust: 0.727
-    # Nominal attitude change per pulse: roll/pitch 6.9 deg, yaw 10.3 deg.
-    # Two 0.8 s trials exceeded the 20 deg tilt limit after the signed roll
-    # checks, so only the pulse duration is reduced for the next trial series.
-    # Position hold after every signed pulse returns the vehicle to the hover
-    # point instead of preserving a residual tilt and accumulating drift.
+    # 三轴测试角速度(rad/s)；增大后响应更明显，但姿态和漂移风险更高。
     roll_rate_rad_s: 0.30
     pitch_rate_rad_s: 0.30
     yaw_rate_rad_s: 0.45
+    # 单次脉冲前准备、施加和最短恢复时间(s)。
     prepare_duration_s: 2.0
     pulse_duration_s: 0.4
-    # Each recovery lasts at least this long, then waits for all feedback gates
-    # below to remain satisfied before the next pulse begins.
     settle_duration_s: 2.0
+    # 忽略脉冲初始瞬态的时间(s)。
     response_ignore_s: 0.15
+    # 判定响应有效的最小角速度(rad/s)和最少采样数。
     minimum_response_rad_s: 0.02
     minimum_samples: 3
+    # 回正至少持续时间(s)。
     recovery_duration_s: 2.0
+    # 进入下一脉冲前的位置(m)、水平速度(m/s)和倾角(deg)容限。
     recovery_position_tolerance_m: 0.20
     recovery_horizontal_speed_tolerance_m_s: 0.20
     recovery_tilt_tolerance_deg: 5.0
     recovery_settle_time_s: 0.5
+    # 单次回正最大等待时间(s)，超时则中止。
     recovery_timeout_s: 8.0
 
+    # MAVLink系统/组件编号，单机默认保持1。
     target_system: 1
     target_component: 1
     source_system: 1

@@ -61,7 +61,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('world', default_value='default'),
         DeclareLaunchArgument('target_x', default_value='12.0'),
         DeclareLaunchArgument('target_y', default_value='0.0'),
-        # Keep the moving target centre on the camera optical-axis height.
+        # Keep the nominal moving-target centre on the initial search plane;
+        # other heights are handled by visual acquisition.
         DeclareLaunchArgument('target_z', default_value='4.0'),
         DeclareLaunchArgument('target_pattern', default_value='figure8'),
         # Paper HITL evaluates the figure-eight at 5, 7.5, and 10 m/s.

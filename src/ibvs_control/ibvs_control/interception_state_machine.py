@@ -42,8 +42,10 @@ class InterceptionGateConfig:
     mission_timeout_s: float = 40.0
     telemetry_timeout_s: float = 0.2
     command_timeout_s: float = 0.1
-    speed_limit_m_s: float = 2.0
-    tilt_limit_rad: float = math.radians(20.0)
+    # 拦截阶段最大飞行速度，单位m/s。
+    speed_limit_m_s: float = 21.0
+    # 拦截阶段最大倾角，单位rad，对应55deg。
+    tilt_limit_rad: float = math.radians(55.0)
     minimum_barrier_margin: float = 0.02
     post_hit_coast_duration_s: float = 2.0
     recovery_settle_time_s: float = 1.0

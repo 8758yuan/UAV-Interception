@@ -28,7 +28,7 @@ def generate_launch_description() -> LaunchDescription:
     ]
     target_model = os.path.join(
         get_package_share_directory('ibvs_sim'),
-        'models',
+        'target_models',
         'static_target.sdf',
     )
     clock_bridge = Node(
@@ -99,9 +99,10 @@ def generate_launch_description() -> LaunchDescription:
             # mono_cam points along Gazebo +X for the x500_mono_cam model.
             DeclareLaunchArgument('target_x', default_value='12.0'),
             DeclareLaunchArgument('target_y', default_value='0.0'),
-            # The x500_mono_cam optical centre is at the vehicle body height;
-            # vision_direct_interception targets 4 m, so keep the balloon
-            # centre on that same horizontal plane by default.
+            # Keep the nominal regression target on the initial search plane.
+            # Other heights are supported by the coordinator's visual
+            # acquisition scan, so this value is intentionally independent of
+            # the controller's initial takeoff altitude.
             DeclareLaunchArgument('target_z', default_value='4.0'),
             DeclareLaunchArgument(
                 'vehicle_model_name', default_value='x500_mono_cam_0'

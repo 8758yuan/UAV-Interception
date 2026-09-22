@@ -3,6 +3,8 @@
 import inspect
 from pathlib import Path
 
+import yaml
+
 from ibvs_control import vision_interception_coordinator
 from ibvs_control import paper_state_observer_node
 
@@ -65,7 +67,7 @@ def test_legacy_target_state_pipeline_is_absent() -> None:
 def test_simulation_target_does_not_publish_odometry() -> None:
     """The simulated target exposes imagery/contact, not world-state data."""
     sim_root = Path(__file__).parents[2] / 'ibvs_sim'
-    model = (sim_root / 'models' / 'static_target.sdf').read_text(
+    model = (sim_root / 'target_models' / 'static_target.sdf').read_text(
         encoding='utf-8'
     )
     launch = (sim_root / 'launch' / 'p4_vision_monitor.launch.py').read_text(
@@ -102,6 +104,36 @@ def test_trial_bag_has_no_target_state_topic() -> None:
     ).read_text(encoding='utf-8')
     assert '/interception/truth/relative_state' not in trial_launch
     assert '/model/ibvs_target/odometry' not in trial_launch
+    assert "'/camera/image_raw'" not in trial_launch
+    assert "'minimum_bag_free_space_gb'" in trial_launch
+
+
+def test_vehicle_tilt_guard_does_not_shadow_interception_limit() -> None:
+    """Active interception must be terminated by its dedicated tilt gate."""
+    config_path = (
+        Path(__file__).parents[1]
+        / 'config'
+        / 'vision_direct_interception.yaml'
+    )
+    parameters = yaml.safe_load(config_path.read_text(encoding='utf-8'))[
+        'vision_interception_coordinator'
+    ]['ros__parameters']
+    assert parameters['max_tilt_deg'] > parameters[
+        'interception_tilt_limit_deg'
+    ]
+
+
+def test_flight_velocity_gain_matches_airframe_bandwidth_baseline() -> None:
+    """Do not restore the high-gain braking reversal seen near contact."""
+    config_path = (
+        Path(__file__).parents[1]
+        / 'config'
+        / 'paper_design_parameters.yaml'
+    )
+    parameters = yaml.safe_load(config_path.read_text(encoding='utf-8'))[
+        'vision_interception_coordinator'
+    ]['ros__parameters']
+    assert parameters['paper_k2'] == 3.0
 
 
 def test_observer_uses_only_onboard_imu_attitude_and_image() -> None:
@@ -126,19 +158,20 @@ def test_trial_launches_and_records_observer() -> None:
     assert "'/interception/observer/state'" in trial_launch
     assert "'/interception/observer/reset'" in trial_launch
     assert "'/fmu/out/sensor_combined'" in trial_launch
-    assert "DeclareLaunchArgument('speed_limit_m_s'" in trial_launch
+    assert "'speed_limit_m_s'" in trial_launch
     assert "'interception_tilt_limit_deg': ParameterValue" in trial_launch
     assert "'max_horizontal_distance_m': ParameterValue" in trial_launch
+    assert "'paper_design_parameters.yaml'" in trial_launch
 
 
 def test_sitl_delay_and_dkf_period_configuration_match_paper() -> None:
     """Eighty milliseconds at 50 Hz is D=4, not 16 IMU samples."""
     workspace_src = Path(__file__).parents[2]
-    observer_config = (
+    paper_design_config = (
         workspace_src
         / 'ibvs_control'
         / 'config'
-        / 'paper_state_observer.yaml'
+        / 'paper_design_parameters.yaml'
     ).read_text(encoding='utf-8')
     vision_launch = (
         workspace_src
@@ -146,10 +179,43 @@ def test_sitl_delay_and_dkf_period_configuration_match_paper() -> None:
         / 'launch'
         / 'p4_vision_monitor.launch.py'
     ).read_text(encoding='utf-8')
-    assert 'dkf_delay_steps: 4' in observer_config
-    assert 'dkf_update_rate_hz: 50.0' in observer_config
+    assert 'dkf_delay_steps: 4' in paper_design_config
+    assert 'dkf_update_rate_hz: 50.0' in paper_design_config
     assert "default_value='0.08'" in vision_launch
 
+
+def test_paper_design_parameters_have_one_configuration_source() -> None:
+    """Paper-tuned values live only in the dedicated override file."""
+    config_root = Path(__file__).parents[1] / 'config'
+    design = yaml.safe_load(
+        (config_root / 'paper_design_parameters.yaml').read_text(
+            encoding='utf-8'
+        )
+    )
+    controller = design['vision_interception_coordinator']['ros__parameters']
+    observer = design['paper_state_observer']['ros__parameters']
+    assert set(controller) == {
+        'paper_k1',
+        'paper_k2',
+        'safe_los_angle_deg',
+        'designed_los_pitch_deg',
+        'omega_limit_rad_s',
+    }
+    assert 'initial_q_std' in observer
+    assert observer['initial_camera_depth_m'] > 0.0
+    assert 'gyro_noise_std_rad_s' in observer
+    assert 'image_noise_std' in observer
+    assert 'dkf_delay_steps' in observer
+
+    base_configs = (
+        config_root / 'vision_direct_interception.yaml',
+        config_root / 'paper_state_observer.yaml',
+    )
+    for path in base_configs:
+        contents = yaml.safe_load(path.read_text(encoding='utf-8'))
+        parameters = next(iter(contents.values()))['ros__parameters']
+        assert not set(parameters).intersection(controller)
+        assert not set(parameters).intersection(observer)
 
 def test_static_and_moving_targets_default_to_camera_centre_height() -> None:
     """The target defaults must not recreate the old below-camera impact."""
@@ -236,3 +302,6 @@ def test_visual_search_configuration_is_enabled_for_flight() -> None:
     ).read_text(encoding='utf-8')
     assert 'visual_feature_timeout_s: 0.20' in config
     assert 'visual_search_yaw_rate_rad_s: 0.20' in config
+    assert 'visual_search_vertical_amplitude_m: 3.0' in config
+    assert 'visual_search_vertical_period_s: 20.0' in config
+    assert 'max_relative_altitude_m: 50.0' in config

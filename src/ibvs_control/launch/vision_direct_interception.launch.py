@@ -22,6 +22,13 @@ def generate_launch_description() -> LaunchDescription:
             'paper_state_observer.yaml',
         ]
     )
+    paper_design_config = PathJoinSubstitution(
+        [
+            FindPackageShare('ibvs_control'),
+            'config',
+            'paper_design_parameters.yaml',
+        ]
+    )
     return LaunchDescription(
         [
             Node(
@@ -29,14 +36,14 @@ def generate_launch_description() -> LaunchDescription:
                 executable='paper_state_observer',
                 name='paper_state_observer',
                 output='screen',
-                parameters=[observer_config],
+                parameters=[observer_config, paper_design_config],
             ),
             Node(
                 package='ibvs_control',
                 executable='vision_interception_coordinator',
                 name='vision_interception_coordinator',
                 output='screen',
-                parameters=[config],
+                parameters=[config, paper_design_config],
             )
         ]
     )

@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 
 def _model_root():
-    path = Path(__file__).parents[1] / 'models' / 'static_target.sdf'
+    path = Path(__file__).parents[1] / 'target_models' / 'static_target.sdf'
     return ET.parse(path).getroot().find('model')
 
 

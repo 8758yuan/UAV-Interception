@@ -16,28 +16,37 @@ class VisualAcquisitionPhase(str, Enum):
 
 @dataclass(frozen=True)
 class VisualAcquisitionConfig:
-    """Limits for position-hold search and pixel-error alignment."""
+    """
+    Limits for position-hold search and pixel-error alignment.
+
+    Search is deliberately active in both yaw and altitude.  The vehicle
+    starts from a conservative takeoff height, then uses the camera feature
+    to acquire targets at a different elevation without receiving target
+    world-state information.
+    """
 
     search_yaw_rate_rad_s: float
+    search_vertical_amplitude_m: float
+    search_vertical_period_s: float
     align_yaw_gain_rad_s: float
     align_vertical_gain_m_s: float
     center_error: float
     release_error: float
     settle_time_s: float
     target_loss_timeout_s: float
-    maximum_vertical_offset_m: float
 
     def validate(self) -> None:
         """Reject unsafe or internally inconsistent acquisition tuning."""
         values = {
             'search_yaw_rate_rad_s': self.search_yaw_rate_rad_s,
+            'search_vertical_amplitude_m': self.search_vertical_amplitude_m,
+            'search_vertical_period_s': self.search_vertical_period_s,
             'align_yaw_gain_rad_s': self.align_yaw_gain_rad_s,
             'align_vertical_gain_m_s': self.align_vertical_gain_m_s,
             'center_error': self.center_error,
             'release_error': self.release_error,
             'settle_time_s': self.settle_time_s,
             'target_loss_timeout_s': self.target_loss_timeout_s,
-            'maximum_vertical_offset_m': self.maximum_vertical_offset_m,
         }
         for name, value in values.items():
             if not math.isfinite(value) or value <= 0.0:
@@ -69,6 +78,8 @@ class VisualAcquisition:
         self.last_step_s: Optional[float] = None
         self.last_seen_s: Optional[float] = None
         self.centered_since_s: Optional[float] = None
+        self.search_started_s: Optional[float] = None
+        self.search_center_offset_m = 0.0
 
     def step(
         self,
@@ -87,6 +98,8 @@ class VisualAcquisition:
             raise ValueError('now_s must be nonnegative')
         if self.yaw_setpoint_rad is None:
             self.yaw_setpoint_rad = _wrap_angle(current_yaw_rad)
+        if self.search_started_s is None:
+            self.search_started_s = now_s
         elapsed_s = 0.0
         if self.last_step_s is not None:
             elapsed_s = max(0.0, now_s - self.last_step_s)
@@ -109,9 +122,7 @@ class VisualAcquisition:
                 or now_s - self.last_seen_s
                 >= self.config.target_loss_timeout_s
             ):
-                self.phase = VisualAcquisitionPhase.SEARCH
-                self.centered_since_s = None
-                self.yaw_setpoint_rad = _wrap_angle(current_yaw_rad)
+                self._begin_search(now_s, current_yaw_rad)
 
         elif self.phase == VisualAcquisitionPhase.SEARCH:
             self.centered_since_s = None
@@ -123,6 +134,7 @@ class VisualAcquisition:
                     self.yaw_setpoint_rad
                     + self.config.search_yaw_rate_rad_s * elapsed_s
                 )
+                self.vertical_offset_m = self._search_vertical_offset(now_s)
 
         elif self.phase == VisualAcquisitionPhase.ALIGN:
             if target_detected:
@@ -130,13 +142,10 @@ class VisualAcquisition:
                     self.yaw_setpoint_rad
                     + self.config.align_yaw_gain_rad_s * x_norm * elapsed_s
                 )
-                self.vertical_offset_m = _clip(
-                    self.vertical_offset_m
-                    + self.config.align_vertical_gain_m_s
+                self.vertical_offset_m += (
+                    self.config.align_vertical_gain_m_s
                     * y_norm
-                    * elapsed_s,
-                    -self.config.maximum_vertical_offset_m,
-                    self.config.maximum_vertical_offset_m,
+                    * elapsed_s
                 )
                 if image_error <= self.config.center_error:
                     if self.centered_since_s is None:
@@ -150,9 +159,7 @@ class VisualAcquisition:
                 or now_s - self.last_seen_s
                 >= self.config.target_loss_timeout_s
             ):
-                self.phase = VisualAcquisitionPhase.SEARCH
-                self.centered_since_s = None
-                self.yaw_setpoint_rad = _wrap_angle(current_yaw_rad)
+                self._begin_search(now_s, current_yaw_rad)
 
         return VisualAcquisitionCommand(
             phase=self.phase,
@@ -166,9 +173,28 @@ class VisualAcquisition:
             ),
         )
 
+    def _begin_search(self, now_s: float, current_yaw_rad: float) -> None:
+        """Start a fresh bounded yaw-and-height search around current pose."""
+        self.phase = VisualAcquisitionPhase.SEARCH
+        self.centered_since_s = None
+        self.yaw_setpoint_rad = _wrap_angle(current_yaw_rad)
+        self.search_started_s = now_s
+        self.search_center_offset_m = self.vertical_offset_m
 
-def _clip(value: float, lower: float, upper: float) -> float:
-    return min(max(value, lower), upper)
+    def _search_vertical_offset(self, now_s: float) -> float:
+        """Return a smooth vertical scan offset centered on the last pose."""
+        if self.search_started_s is None:
+            return self.vertical_offset_m
+        elapsed_s = max(0.0, now_s - self.search_started_s)
+        phase = (
+            2.0 * math.pi * elapsed_s
+            / self.config.search_vertical_period_s
+        )
+        offset = (
+            self.search_center_offset_m
+            + self.config.search_vertical_amplitude_m * math.sin(phase)
+        )
+        return offset
 
 
 def _wrap_angle(angle_rad: float) -> float:

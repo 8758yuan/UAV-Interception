@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import re
+import shutil
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -22,7 +23,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _prepare_directories(context) -> list:
-    """Refuse unsafe ids and accidental replacement of a trial record."""
+    """Refuse unsafe ids, replacement, and recording onto a full disk."""
     trial_id = LaunchConfiguration('trial_id').perform(context)
     if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,79}', trial_id) is None:
         raise ValueError('trial_id is not a safe 1-80 character identifier')
@@ -33,6 +34,22 @@ def _prepare_directories(context) -> list:
         raise FileExistsError(f'trial bag already exists: {trial_id}')
     (results / 'trials').mkdir(parents=True, exist_ok=True)
     (results / 'bags').mkdir(parents=True, exist_ok=True)
+    record_bag = LaunchConfiguration('record_bag').perform(context)
+    recording_enabled = record_bag.strip().lower() in ('1', 'true', 'yes', 'on')
+    if recording_enabled:
+        minimum_gb = float(
+            LaunchConfiguration('minimum_bag_free_space_gb').perform(context)
+        )
+        if minimum_gb <= 0.0:
+            raise ValueError('minimum_bag_free_space_gb must be positive')
+        free_bytes = shutil.disk_usage(results).free
+        required_bytes = int(minimum_gb * 1024**3)
+        if free_bytes < required_bytes:
+            free_gb = free_bytes / 1024**3
+            raise RuntimeError(
+                'insufficient disk space for trial recording: '
+                f'{free_gb:.2f} GiB free, {minimum_gb:.2f} GiB required'
+            )
     return []
 
 
@@ -44,6 +61,9 @@ def generate_launch_description() -> LaunchDescription:
     )
     observer_config = os.path.join(
         package_share, 'config', 'paper_state_observer.yaml'
+    )
+    paper_design_config = os.path.join(
+        package_share, 'config', 'paper_design_parameters.yaml'
     )
     trial_id = LaunchConfiguration('trial_id')
     results = LaunchConfiguration('results_directory')
@@ -60,6 +80,7 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         parameters=[
             config,
+            paper_design_config,
             {
                 'enable_flight_commands': ParameterValue(
                     enabled,
@@ -86,14 +107,15 @@ def generate_launch_description() -> LaunchDescription:
         executable='paper_state_observer',
         name='paper_state_observer',
         output='screen',
-        parameters=[observer_config],
+        parameters=[observer_config, paper_design_config],
     )
     bag = ExecuteProcess(
         cmd=[
             'ros2', 'bag', 'record', '-o',
             PathJoinSubstitution([results, 'bags', trial_id]),
             '/clock',
-            '/camera/image_raw',
+            # Raw 1280x960 frames consumed about 110 MB/s and filled the disk.
+            # VisionFeature plus CameraInfo retain the controller evidence.
             '/camera/camera_info',
             '/interception/vision/raw_feature',
             '/interception/observer/state',
@@ -138,12 +160,25 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument('confirmation_token', default_value=''),
             DeclareLaunchArgument('record_bag', default_value='true'),
-            DeclareLaunchArgument('speed_limit_m_s', default_value='21.0'),
             DeclareLaunchArgument(
-                'interception_tilt_limit_deg', default_value='55.0'
+                'minimum_bag_free_space_gb',
+                default_value='1.0',
+                description='启动录包所需的最小剩余磁盘空间，单位GiB',
             ),
             DeclareLaunchArgument(
-                'max_horizontal_distance_m', default_value='15.0'
+                'speed_limit_m_s',
+                default_value='21.0',
+                description='拦截阶段最大飞行速度，单位m/s',
+            ),
+            DeclareLaunchArgument(
+                'interception_tilt_limit_deg',
+                default_value='55.0',
+                description='拦截阶段最大倾角，单位deg',
+            ),
+            DeclareLaunchArgument(
+                'max_horizontal_distance_m',
+                default_value='20.0',
+                description='相对起飞点的最大水平距离，单位m',
             ),
             OpaqueFunction(function=_prepare_directories),
             shutdown,
