@@ -9,7 +9,7 @@ vision_interception_coordinator:
     paper_k2: 3.0
 
     # 论文式(12)的Barrier边界k_b，本项目用角度配置：
-    # k_b=1-cos(safe_los_angle_deg)。45 deg可让控制器更早抑制目标偏移。
+    # k_b=1-cos(safe_los_angle_deg)。数值减小可让控制器更早抑制目标偏移。
     safe_los_angle_deg: 30.0
 
     # 论文中的设计视线n_td；0 deg表示沿前视相机光轴拦截。
@@ -17,7 +17,11 @@ vision_interception_coordinator:
 
     # 论文式(29)的角速度饱和上限omega_m(rad/s)。
     # 越大姿态响应越快，但会在拦截启动时使目标迅速偏离图像中心。
-    omega_limit_rad_s: 0.30
+    omega_limit_rad_s: 0.35
+
+    # 最大总推力(N)，必须与Gazebo/电机模型一致。
+    # 该参数同时作为论文控制器的推力饱和上限和PX4推力映射上限。
+    thrust_max_n: 58.8399
 
 paper_state_observer:
   ros__parameters:

@@ -200,6 +200,7 @@ def test_paper_design_parameters_have_one_configuration_source() -> None:
         'safe_los_angle_deg',
         'designed_los_pitch_deg',
         'omega_limit_rad_s',
+        'thrust_max_n',
     }
     assert 'initial_q_std' in observer
     assert observer['initial_camera_depth_m'] > 0.0

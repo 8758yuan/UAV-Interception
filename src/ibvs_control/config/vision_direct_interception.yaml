@@ -89,7 +89,7 @@ vision_interception_coordinator:
     # 整机最终倾角保护(deg)，应高于interception_tilt_limit_deg。
     max_tilt_deg: 60.0
 
-    # k1、k2、Barrier边界、设计视线和角速度上限统一在
+    # k1、k2、Barrier边界、设计视线、角速度上限和最大推力统一在
     # paper_design_parameters.yaml中调整。
     # 相机到FLU机体系旋转矩阵，按行展开；相机安装不变时勿调。
     camera_to_body_rotation: [0.0, 0.0, 1.0,
@@ -97,8 +97,6 @@ vision_interception_coordinator:
                               0.0, -1.0, 0.0]
     # Gazebo整机质量(kg)，必须与模型一致。
     mass_kg: 2.1143076923
-    # 最大总推力(N)，必须与电机模型一致。
-    thrust_max_n: 58.8399
     # FLU机体系等效线性阻力(kg/s)，顺序为x/y/z。
     drag_coefficients_b_kg_s: [0.1862366, 0.1862366, 0.0]
     # 归一化悬停推力、推力曲线指数和最小输出比例，需成套标定。
@@ -116,7 +114,7 @@ vision_interception_coordinator:
     visual_search_vertical_period_s: 20.0
     # 图像水平/垂直对准增益；增大对准更快，过大会振荡。
     visual_align_yaw_gain_rad_s: 1.2
-    visual_align_vertical_gain_m_s: 2.0
+    visual_align_vertical_gain_m_s: 3.0
     # 对准进入/退出阈值；启动前将目标约束在更靠近图像中心的位置。
     # release必须大于center以形成滞回。
     visual_align_center_error: 0.04
