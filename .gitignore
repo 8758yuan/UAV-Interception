@@ -16,6 +16,7 @@ __pycache__/
 *.db3
 *.mcap
 results/
+src/ibvs_perception/models/*.pt
 
 # Editor and operating-system files
 .vscode/

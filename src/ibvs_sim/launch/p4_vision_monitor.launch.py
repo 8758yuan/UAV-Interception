@@ -1,4 +1,4 @@
-"""Spawn the target and start the delayed forward-camera data path."""
+"""Spawn the target and start YOLO detection on the forward camera."""
 
 import os
 
@@ -11,13 +11,18 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
-    """Compose target contact feedback and image features without world state."""
+    """Compose target contact feedback and image features."""
     world = LaunchConfiguration('world')
     target_x = LaunchConfiguration('target_x')
     target_y = LaunchConfiguration('target_y')
     target_z = LaunchConfiguration('target_z')
     model_name = LaunchConfiguration('vehicle_model_name')
     image_delay = LaunchConfiguration('image_delay_s')
+    model_path = LaunchConfiguration('model_path')
+    target_class = LaunchConfiguration('target_class')
+    confidence_threshold = LaunchConfiguration('confidence_threshold')
+    inference_size = LaunchConfiguration('inference_size')
+    device = LaunchConfiguration('device')
     camera_image_gz = [
         '/world/', world, '/model/', model_name,
         '/link/camera_link/sensor/camera/image',
@@ -75,7 +80,8 @@ def generate_launch_description() -> LaunchDescription:
         name='front_camera_bridge',
         arguments=[
             camera_image_gz + ['@sensor_msgs/msg/Image[gz.msgs.Image'],
-            camera_info_gz + ['@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo'],
+            camera_info_gz
+            + ['@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo'],
         ],
         remappings=[
             (camera_image_gz, '/camera/image_raw'),
@@ -85,11 +91,18 @@ def generate_launch_description() -> LaunchDescription:
     )
     detector = Node(
         package='ibvs_perception',
-        executable='red_target_detector',
-        name='red_target_detector',
+        executable='yolo_target_detector',
+        name='yolo_target_detector',
         parameters=[{
             'use_sim_time': True,
             'image_delay_s': ParameterValue(image_delay, value_type=float),
+            'model_path': model_path,
+            'target_class': target_class,
+            'confidence_threshold': ParameterValue(
+                confidence_threshold, value_type=float
+            ),
+            'inference_size': ParameterValue(inference_size, value_type=int),
+            'device': ParameterValue(device, value_type=str),
         }],
         output='screen',
     )
@@ -110,6 +123,25 @@ def generate_launch_description() -> LaunchDescription:
             # Paper flight experiments report about 80 ms total imaging and
             # processing delay.  This makes SITL exercise the same DKF path.
             DeclareLaunchArgument('image_delay_s', default_value='0.08'),
+            DeclareLaunchArgument(
+                'model_path',
+                default_value=os.path.join(
+                    get_package_share_directory('ibvs_perception'),
+                    'models', 'balloon_yolo11n.pt',
+                ),
+                description=(
+                    'Balloon weights; custom detection weights are supported'
+                ),
+            ),
+            DeclareLaunchArgument(
+                'target_class', default_value='balloon',
+                description='Exact class name in the selected YOLO weights',
+            ),
+            DeclareLaunchArgument(
+                'confidence_threshold', default_value='0.25'
+            ),
+            DeclareLaunchArgument('inference_size', default_value='1280'),
+            DeclareLaunchArgument('device', default_value=''),
             clock_bridge,
             contact_bridge,
             spawn_target,

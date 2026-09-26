@@ -10,9 +10,8 @@ from ibvs_perception.camera_geometry import (
     low_pass_feature,
     normalized_pixel,
     project_optical_point,
-    red_hsv_mask,
 )
-from ibvs_perception.red_target_detector import _delayed_release_ns
+from ibvs_perception.yolo_detection import delayed_release_ns
 
 
 def test_optical_projection_has_expected_pixel_directions() -> None:
@@ -47,20 +46,11 @@ def test_feature_low_pass_rejects_frame_rate_dependent_tuning() -> None:
     assert -1.0 < once[1] < 0.0
 
 
-def test_red_hsv_mask_rejects_nonred_pixels() -> None:
-    """Target segmentation accepts both ends of red hue and excludes green."""
-    image = np.array(
-        [[[255, 0, 0], [255, 20, 35]], [[0, 255, 0], [30, 30, 30]]],
-        dtype=np.uint8,
-    )
-    assert red_hsv_mask(image).tolist() == [[True, True], [False, False]]
-
-
 def test_feature_release_enforces_capture_to_publish_delay() -> None:
-    assert _delayed_release_ns(1_000_000_000, 1_010_000_000, 0.08) == (
+    assert delayed_release_ns(1_000_000_000, 1_010_000_000, 0.08) == (
         1_080_000_000
     )
     # If processing itself already exceeded 80 ms, do not add a second delay.
-    assert _delayed_release_ns(1_000_000_000, 1_090_000_000, 0.08) == (
+    assert delayed_release_ns(1_000_000_000, 1_090_000_000, 0.08) == (
         1_090_000_000
     )

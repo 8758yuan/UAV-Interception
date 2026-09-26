@@ -1,0 +1,5 @@
+# Install in the Python environment used to source ROS 2 Humble.
+# Keep NumPy 1.x for the Ubuntu 22.04 cv_bridge binary.
+numpy>=1.23,<2
+opencv-python>=4.6,<4.12
+ultralytics>=8.3,<9

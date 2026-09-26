@@ -144,47 +144,6 @@ def camera_los_to_world(
     return los_e / np.linalg.norm(los_e)
 
 
-def red_hsv_mask(rgb: np.ndarray) -> np.ndarray:
-    """Return a red HSV mask without a cv2 runtime dependency.
-
-    The Gazebo bridge can publish rgb8 or bgr8.  The caller normalizes either
-    encoding to RGB before calling this vectorized implementation.
-    """
-    if rgb.ndim != 3 or rgb.shape[2] != 3:
-        raise ValueError('rgb image must have shape (height, width, 3)')
-    values = np.asarray(rgb, dtype=float) / 255.0
-    maximum = values.max(axis=2)
-    minimum = values.min(axis=2)
-    delta = maximum - minimum
-    hue = np.zeros_like(maximum)
-    nonzero = delta > 1e-12
-    red_max = nonzero & (maximum == values[:, :, 0])
-    green_max = nonzero & (maximum == values[:, :, 1])
-    blue_max = nonzero & (maximum == values[:, :, 2])
-    hue[red_max] = np.mod(
-        (values[:, :, 1][red_max] - values[:, :, 2][red_max])
-        / delta[red_max],
-        6.0,
-    )
-    hue[green_max] = (
-        (values[:, :, 2][green_max] - values[:, :, 0][green_max])
-        / delta[green_max]
-    ) + 2.0
-    hue[blue_max] = (
-        (values[:, :, 0][blue_max] - values[:, :, 1][blue_max])
-        / delta[blue_max]
-    ) + 4.0
-    hue /= 6.0
-    saturation = np.divide(
-        delta,
-        maximum,
-        out=np.zeros_like(delta),
-        where=maximum > 1e-12,
-    )
-    return (((hue <= 0.05) | (hue >= 0.95)) & (saturation >= 0.45)
-            & (maximum >= 0.25))
-
-
 def _finite_vector(values: Iterable[float], name: str) -> Tuple[float, float, float]:
     result = tuple(float(value) for value in values)
     if len(result) != 3 or not all(math.isfinite(value) for value in result):

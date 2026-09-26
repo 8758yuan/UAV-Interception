@@ -1,3 +1,6 @@
+from glob import glob
+import os
+
 from setuptools import find_packages, setup
 
 
@@ -14,8 +17,9 @@ setup(
             ['resource/' + package_name],
         ),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'models'), glob('models/*.pt')),
     ],
-    install_requires=['numpy', 'setuptools'],
+    install_requires=['numpy<2', 'setuptools', 'ultralytics>=8.3,<9'],
     zip_safe=True,
     maintainer='yuan',
     maintainer_email='yuan@example.com',
@@ -24,7 +28,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'red_target_detector = ibvs_perception.red_target_detector:main',
+            'yolo_target_detector = ibvs_perception.yolo_target_detector:main',
         ],
     },
 )
