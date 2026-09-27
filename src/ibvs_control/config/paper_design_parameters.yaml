@@ -17,7 +17,7 @@ vision_interception_coordinator:
 
     # 论文式(29)的角速度饱和上限omega_m(rad/s)。
     # 越大姿态响应越快，但会在拦截启动时使目标迅速偏离图像中心。
-    omega_limit_rad_s: 0.35
+    omega_limit_rad_s: 1.3
 
     # 最大总推力(N)，必须与Gazebo/电机模型一致。
     # 该参数同时作为论文控制器的推力饱和上限和PX4推力映射上限。

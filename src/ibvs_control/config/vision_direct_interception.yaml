@@ -32,12 +32,14 @@ vision_interception_coordinator:
       # PX4命令确认反馈。
       vehicle_command_ack: /fmu/out/vehicle_command_ack_v1
 
-    # 原始视觉特征输入，仅用于目标搜索、对准和诊断。
+    # 原始视觉特征输入，仅用于目标搜索、粗对准和诊断。
     feature_topic: /interception/vision/raw_feature
     # 延迟状态观测器输出；主动拦截控制只使用该状态。
     observer_topic: /interception/observer/state
     # 请求观测器重新初始化的服务话题。
     observer_reset_topic: /interception/observer/reset
+    # 起飞期多视线估计在拦截复位时通过此话题交给观测器。
+    observer_bootstrap_topic: /interception/observer/bootstrap
     # 控制调试信息输出话题。
     debug_topic: /interception/control/debug
     # 目标接触/颜色确认话题，确认后才允许结束拦截。
@@ -95,6 +97,35 @@ vision_interception_coordinator:
     camera_to_body_rotation: [0.0, 0.0, 1.0,
                               -1.0, 0.0, 0.0,
                               0.0, -1.0, 0.0]
+    # 相机光心相对机体系原点的位置(FLU, m)，与SITL机型安装一致。
+    camera_position_b_m: [0.12, 0.0, 0.0]
+    # 起飞/搜索期间以图像拍摄时刻匹配本机位姿，持续估计目标距离。
+    # 当前静止目标试验选static；目标在估距期间移动时改为constant_velocity。
+    range_target_model: static
+    range_image_noise_std: 0.015
+    range_min_samples: 20
+    range_max_samples: 500
+    range_window_s: 30.0
+    range_min_time_span_s: 2.0
+    range_min_parallax_deg: 1.0
+    range_min_transverse_baseline_m: 2.0
+    range_max_condition_number: 100.0
+    range_max_reprojection_rms: 0.03
+    range_outlier_reprojection_threshold: 0.06
+    range_max_outlier_fraction: 0.2
+    range_max_std_m: 2.0
+    range_max_relative_std: 0.2
+    range_max_velocity_std_m_s: 2.0
+    # 时钟/姿态匹配与协方差保守下限。
+    range_pose_max_time_error_s: 0.03
+    range_pose_history_s: 35.0
+    range_bootstrap_max_age_s: 0.5
+    range_min_observable_duration_s: 2.0
+    range_position_std_floor_m: 1.0
+    range_velocity_std_floor_m_s: 5.0
+    # 若起飞阶段未形成足够视差，在安全视觉锁定下缓慢升降估距。
+    range_probe_vertical_amplitude_m: 1.5
+    range_probe_vertical_period_s: 8.0
     # Gazebo整机质量(kg)，必须与模型一致。
     mass_kg: 2.1143076923
     # FLU机体系等效线性阻力(kg/s)，顺序为x/y/z。
@@ -112,14 +143,15 @@ vision_interception_coordinator:
     # 垂直搜索振幅(m)和周期(s)；振幅必须位于高度围栏内。
     visual_search_vertical_amplitude_m: 3.0
     visual_search_vertical_period_s: 20.0
-    # 图像水平/垂直对准增益；增大对准更快，过大会振荡。
+    # 目标在安全视线范围之外时使用的偏航/高度粗对准增益。
     visual_align_yaw_gain_rad_s: 1.2
     visual_align_vertical_gain_m_s: 3.0
-    # 对准进入/退出阈值；启动前将目标约束在更靠近图像中心的位置。
-    # release必须大于center以形成滞回。
-    visual_align_center_error: 0.04
-    visual_align_release_error: 0.08
-    # 误差持续满足center阈值的时间(s)，越大越稳但等待更久。
+    # 启动/解除视觉锁定所需的额外视线屏障裕度（叠加minimum_barrier_margin）。
+    # 启动余量须大于解除余量；当前30°屏障下分别约对应25°/27°偏角。
+    # 目标已在安全范围内时允许直接启动，无需先对准图像中心。
+    visual_start_barrier_margin_reserve: 0.02
+    visual_release_barrier_margin_reserve: 0.005
+    # 目标连续处于启动安全范围的时间(s)。
     visual_align_settle_time_s: 0.5
     # 目标连续丢失多久后重启搜索(s)。
     visual_search_loss_timeout_s: 0.3

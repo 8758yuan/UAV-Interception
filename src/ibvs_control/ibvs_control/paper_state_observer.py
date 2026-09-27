@@ -50,7 +50,9 @@ class InterceptionState18:
         """Build a named state from the paper-ordered vector."""
         values = np.asarray(vector, dtype=float)
         if values.shape != (STATE_DIM,) or not np.all(np.isfinite(values)):
-            raise ValueError('observer state vector must be finite and length 18')
+            raise ValueError(
+                'observer state vector must be finite and length 18'
+            )
         return cls(
             q=tuple(float(value) for value in values[Q_SLICE]),
             p_r_e=tuple(float(value) for value in values[P_R_SLICE]),
@@ -108,7 +110,9 @@ class ObserverConfig:
         if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-9):
             raise ValueError('camera_to_body_rotation must be orthonormal')
         if not math.isclose(float(np.linalg.det(rotation)), 1.0, abs_tol=1e-9):
-            raise ValueError('camera_to_body_rotation must have determinant +1')
+            raise ValueError(
+                'camera_to_body_rotation must have determinant +1'
+            )
         for name in (
             'minimum_depth_m',
             'maximum_dt_s',
@@ -202,8 +206,19 @@ class PaperStateObserver:
         self.last_G = np.zeros((STATE_DIM, PROCESS_NOISE_DIM))
         self._clear_delay_history()
 
-    def initialize(self, state: InterceptionState18) -> ObserverSnapshot:
-        """Initialize x and diagonal P without any target world-state input."""
+    def initialize(
+        self,
+        state: InterceptionState18,
+        *,
+        relative_covariance: Sequence[Sequence[float]] | None = None,
+        image_position_covariance: Sequence[Sequence[float]] | None = None,
+    ) -> ObserverSnapshot:
+        """Initialize x and P, optionally using a measured relative-state prior.
+
+        The relative covariance follows [p_r_e(3), v_r_e(3)] order. The
+        image-position cross covariance is Cov(image_xy, p_r_e), with image
+        coordinates along rows and relative position along columns.
+        """
         vector = state.as_vector()
         vector[Q_SLICE] = _normalize_quaternion(vector[Q_SLICE])
         std = self.noise
@@ -216,8 +231,39 @@ class PaperStateObserver:
             + [std.initial_accel_bias_std_m_s2] * 3,
             dtype=float,
         )
+        covariance = np.diag(standard_deviations ** 2)
+        if relative_covariance is not None:
+            relative = np.asarray(relative_covariance, dtype=float)
+            if relative.shape != (6, 6) or not np.all(np.isfinite(relative)):
+                raise ValueError(
+                    'relative_covariance must be a finite 6x6 matrix'
+                )
+            if not np.allclose(relative, relative.T, rtol=1e-10, atol=1e-12):
+                raise ValueError('relative_covariance must be symmetric')
+            relative_slice = slice(P_R_SLICE.start, V_R_SLICE.stop)
+            covariance[relative_slice, relative_slice] = (
+                relative + relative.T
+            ) * 0.5
+        if image_position_covariance is not None:
+            cross = np.asarray(image_position_covariance, dtype=float)
+            if cross.shape != (2, 3) or not np.all(np.isfinite(cross)):
+                raise ValueError(
+                    'image_position_covariance must be a finite 2x3 matrix'
+                )
+            covariance[IMAGE_SLICE, P_R_SLICE] = cross
+            covariance[P_R_SLICE, IMAGE_SLICE] = cross.T
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        if eigenvalues[0] < -1e-10 * max(1.0, eigenvalues[-1]):
+            raise ValueError(
+                'initial covariance must be positive semidefinite'
+            )
+        if eigenvalues[0] < 0.0:
+            covariance = (
+                eigenvectors * np.maximum(eigenvalues, 0.0)
+            ) @ eigenvectors.T
+            covariance = (covariance + covariance.T) * 0.5
         self.x = vector
-        self.P = np.diag(standard_deviations ** 2)
+        self.P = covariance
         self.prediction_count = 0
         self.correction_count = 0
         self.innovation_norm = 0.0
@@ -234,6 +280,9 @@ class PaperStateObserver:
         initial_v_r_e: Sequence[float] = (0.0, 0.0, 0.0),
         initial_b_gyr_b: Sequence[float] = (0.0, 0.0, 0.0),
         initial_b_acc_b: Sequence[float] = (0.0, 0.0, 0.0),
+        *,
+        relative_covariance: Sequence[Sequence[float]] | None = None,
+        image_position_covariance: Sequence[Sequence[float]] | None = None,
     ) -> ObserverSnapshot:
         """Initialize p_r from image LOS and an engineering depth prior."""
         q = _normalize_quaternion(_finite_vector(q_b_to_e, 4, 'q_b_to_e'))
@@ -260,7 +309,11 @@ class PaperStateObserver:
                 _finite_vector(initial_b_acc_b, 3, 'initial_b_acc_b')
             ),
         )
-        return self.initialize(state)
+        return self.initialize(
+            state,
+            relative_covariance=relative_covariance,
+            image_position_covariance=image_position_covariance,
+        )
 
     def predict(
         self,
@@ -511,13 +564,16 @@ class PaperStateObserver:
         omega_b = gyro - b_gyr
         specific_force_b = accel - b_acc
         r_b_to_e = _quaternion_to_rotation(q)
-        target_c = self._r_c_to_b.T @ r_b_to_e.T @ (-p_r)
+        earth_to_camera = self._r_c_to_b.T @ r_b_to_e.T
+        target_c = earth_to_camera @ (-p_r)
         depth_m = float(target_c[2])
         if (
             not math.isfinite(depth_m)
             or depth_m < self.config.minimum_depth_m
         ):
-            raise ValueError('estimated target depth is invalid or behind camera')
+            raise ValueError(
+                'estimated target depth is invalid or behind camera'
+            )
 
         delta_matrix = _appendix_delta_quaternion_matrix(omega_b, dt_s)
         q_new = _normalize_quaternion(delta_matrix @ q, reference=q)
@@ -550,7 +606,8 @@ class PaperStateObserver:
 
         rotation_derivatives = _rotation_derivatives(q)
         f_v_q = np.column_stack(
-            [derivative @ specific_force_b for derivative in rotation_derivatives]
+            [derivative @ specific_force_b
+             for derivative in rotation_derivatives]
         ) * dt_s
         F[V_R_SLICE, Q_SLICE] = f_v_q
         f_v_b_acc = -r_b_to_e * dt_s
@@ -567,6 +624,15 @@ class PaperStateObserver:
             ]
         ) * dt_s
         F[IMAGE_SLICE, Q_SLICE] = f_image_q
+        # Depth z = -earth_to_camera[2] @ p_r. Since the translational
+        # image rate is proportional to 1/z, position uncertainty changes
+        # the predicted image whenever relative translation is present.
+        F[IMAGE_SLICE, P_R_SLICE] = (
+            np.outer(
+                translation_jacobian @ velocity_c,
+                earth_to_camera[2],
+            ) * (dt_s / depth_m)
+        )
         F[IMAGE_SLICE, V_R_SLICE] = (
             translation_jacobian @ self._r_c_to_b.T @ r_b_to_e.T * dt_s
         )

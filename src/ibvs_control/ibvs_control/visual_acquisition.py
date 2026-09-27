@@ -1,4 +1,4 @@
-"""Target-state-free visual search and alignment before interception."""
+"""Target-state-free visual search and safe acquisition before interception."""
 
 from dataclasses import dataclass
 from enum import Enum
@@ -10,14 +10,14 @@ class VisualAcquisitionPhase(str, Enum):
     """Camera-only phases used before forward interception is authorized."""
 
     SEARCH = 'VISUAL_SEARCH'
-    ALIGN = 'VISUAL_ALIGN'
+    ACQUIRE = 'VISUAL_ACQUIRE'
     READY = 'VISUAL_READY'
 
 
 @dataclass(frozen=True)
 class VisualAcquisitionConfig:
     """
-    Limits for position-hold search and pixel-error alignment.
+    Limits for position-hold search and barrier-aware acquisition.
 
     Search is deliberately active in both yaw and altitude.  The vehicle
     starts from a conservative takeoff height, then uses the camera feature
@@ -30,8 +30,10 @@ class VisualAcquisitionConfig:
     search_vertical_period_s: float
     align_yaw_gain_rad_s: float
     align_vertical_gain_m_s: float
-    center_error: float
-    release_error: float
+    k_b: float
+    desired_image_xy: tuple[float, float]
+    start_barrier_margin: float
+    release_barrier_margin: float
     settle_time_s: float
     target_loss_timeout_s: float
 
@@ -43,16 +45,28 @@ class VisualAcquisitionConfig:
             'search_vertical_period_s': self.search_vertical_period_s,
             'align_yaw_gain_rad_s': self.align_yaw_gain_rad_s,
             'align_vertical_gain_m_s': self.align_vertical_gain_m_s,
-            'center_error': self.center_error,
-            'release_error': self.release_error,
+            'k_b': self.k_b,
+            'start_barrier_margin': self.start_barrier_margin,
+            'release_barrier_margin': self.release_barrier_margin,
             'settle_time_s': self.settle_time_s,
             'target_loss_timeout_s': self.target_loss_timeout_s,
         }
         for name, value in values.items():
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f'{name} must be finite and positive')
-        if self.release_error <= self.center_error:
-            raise ValueError('release_error must exceed center_error')
+        if (
+            len(self.desired_image_xy) != 2
+            or not all(math.isfinite(v) for v in self.desired_image_xy)
+        ):
+            raise ValueError('desired_image_xy must contain two finite values')
+        if not (
+            0.0 < self.release_barrier_margin
+            < self.start_barrier_margin < self.k_b
+        ):
+            raise ValueError(
+                'barrier margins must satisfy '
+                '0 < release < start < k_b'
+            )
 
 
 @dataclass(frozen=True)
@@ -67,7 +81,7 @@ class VisualAcquisitionCommand:
 
 
 class VisualAcquisition:
-    """Search for, center, and dwell on a camera target while hovering."""
+    """Search for a target, then dwell within the safe LOS barrier."""
 
     def __init__(self, config: VisualAcquisitionConfig) -> None:
         config.validate()
@@ -77,7 +91,7 @@ class VisualAcquisition:
         self.vertical_offset_m = 0.0
         self.last_step_s: Optional[float] = None
         self.last_seen_s: Optional[float] = None
-        self.centered_since_s: Optional[float] = None
+        self.safe_since_s: Optional[float] = None
         self.search_started_s: Optional[float] = None
         self.search_center_offset_m = 0.0
 
@@ -105,18 +119,29 @@ class VisualAcquisition:
             elapsed_s = max(0.0, now_s - self.last_step_s)
         self.last_step_s = now_s
 
-        image_error = math.hypot(x_norm, y_norm) if target_detected else math.inf
+        desired_x, desired_y = self.config.desired_image_xy
+        x_error = x_norm - desired_x
+        y_error = y_norm - desired_y
+        image_error = (
+            math.hypot(x_error, y_error) if target_detected else math.inf
+        )
+        barrier_margin = (
+            _image_barrier_margin(
+                x_norm, y_norm, desired_x, desired_y, self.config.k_b
+            )
+            if target_detected else -math.inf
+        )
         if target_detected:
             self.last_seen_s = now_s
 
         if self.phase == VisualAcquisitionPhase.READY:
-            # READY is a revocable visual lock, not a latched mission event.
+            # READY is a revocable safe-LOS lock, not a latched mission event.
             # A dropped frame immediately removes readiness while the loss
             # timeout prevents a single dropout from restarting the scan.
             if target_detected:
-                if image_error >= self.config.release_error:
-                    self.phase = VisualAcquisitionPhase.ALIGN
-                    self.centered_since_s = None
+                if barrier_margin <= self.config.release_barrier_margin:
+                    self.phase = VisualAcquisitionPhase.ACQUIRE
+                    self.safe_since_s = None
             elif (
                 self.last_seen_s is None
                 or now_s - self.last_seen_s
@@ -125,9 +150,9 @@ class VisualAcquisition:
                 self._begin_search(now_s, current_yaw_rad)
 
         elif self.phase == VisualAcquisitionPhase.SEARCH:
-            self.centered_since_s = None
+            self.safe_since_s = None
             if target_detected:
-                self.phase = VisualAcquisitionPhase.ALIGN
+                self.phase = VisualAcquisitionPhase.ACQUIRE
                 self.yaw_setpoint_rad = _wrap_angle(current_yaw_rad)
             else:
                 self.yaw_setpoint_rad = _wrap_angle(
@@ -136,30 +161,40 @@ class VisualAcquisition:
                 )
                 self.vertical_offset_m = self._search_vertical_offset(now_s)
 
-        elif self.phase == VisualAcquisitionPhase.ALIGN:
+        elif self.phase == VisualAcquisitionPhase.ACQUIRE:
             if target_detected:
-                self.yaw_setpoint_rad = _wrap_angle(
-                    self.yaw_setpoint_rad
-                    + self.config.align_yaw_gain_rad_s * x_norm * elapsed_s
-                )
-                self.vertical_offset_m += (
-                    self.config.align_vertical_gain_m_s
-                    * y_norm
-                    * elapsed_s
-                )
-                if image_error <= self.config.center_error:
-                    if self.centered_since_s is None:
-                        self.centered_since_s = now_s
-                    elif now_s - self.centered_since_s >= self.config.settle_time_s:
+                if barrier_margin >= self.config.start_barrier_margin:
+                    if self.safe_since_s is None:
+                        self.safe_since_s = now_s
+                    elif (
+                        now_s - self.safe_since_s
+                        >= self.config.settle_time_s
+                    ):
                         self.phase = VisualAcquisitionPhase.READY
-                elif image_error >= self.config.release_error:
-                    self.centered_since_s = None
-            elif (
-                self.last_seen_s is None
-                or now_s - self.last_seen_s
-                >= self.config.target_loss_timeout_s
-            ):
-                self._begin_search(now_s, current_yaw_rad)
+                else:
+                    self.safe_since_s = None
+                    self.yaw_setpoint_rad = _wrap_angle(
+                        self.yaw_setpoint_rad
+                        + self.config.align_yaw_gain_rad_s
+                        * x_error
+                        * elapsed_s
+                    )
+                    self.vertical_offset_m += (
+                        self.config.align_vertical_gain_m_s
+                        * y_error
+                        * elapsed_s
+                    )
+            else:
+                # A brief detector dropout does not restart search, but it
+                # must not count toward the stable-visibility dwell either.
+                if self.safe_since_s is not None:
+                    self.safe_since_s += elapsed_s
+                if (
+                    self.last_seen_s is None
+                    or now_s - self.last_seen_s
+                    >= self.config.target_loss_timeout_s
+                ):
+                    self._begin_search(now_s, current_yaw_rad)
 
         return VisualAcquisitionCommand(
             phase=self.phase,
@@ -169,14 +204,14 @@ class VisualAcquisition:
             ready=bool(
                 self.phase == VisualAcquisitionPhase.READY
                 and target_detected
-                and image_error < self.config.release_error
+                and barrier_margin > self.config.release_barrier_margin
             ),
         )
 
     def _begin_search(self, now_s: float, current_yaw_rad: float) -> None:
         """Start a fresh bounded yaw-and-height search around current pose."""
         self.phase = VisualAcquisitionPhase.SEARCH
-        self.centered_since_s = None
+        self.safe_since_s = None
         self.yaw_setpoint_rad = _wrap_angle(current_yaw_rad)
         self.search_started_s = now_s
         self.search_center_offset_m = self.vertical_offset_m
@@ -199,3 +234,22 @@ class VisualAcquisition:
 
 def _wrap_angle(angle_rad: float) -> float:
     return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+
+
+def _image_barrier_margin(
+    x_norm: float,
+    y_norm: float,
+    desired_x: float,
+    desired_y: float,
+    k_b: float,
+) -> float:
+    """Evaluate the controller's LOS barrier from two camera rays."""
+    cosine = (
+        (1.0 + x_norm * desired_x + y_norm * desired_y)
+        / math.sqrt(
+            (1.0 + x_norm**2 + y_norm**2)
+            * (1.0 + desired_x**2 + desired_y**2)
+        )
+    )
+    z1 = 1.0 - min(1.0, max(-1.0, cosine))
+    return k_b - z1

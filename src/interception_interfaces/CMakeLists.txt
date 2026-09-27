@@ -9,6 +9,7 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ControlDebug.msg"
   "msg/ObserverState.msg"
+  "msg/ObserverBootstrap.msg"
   "msg/VisionFeature.msg"
   DEPENDENCIES builtin_interfaces geometry_msgs
 )

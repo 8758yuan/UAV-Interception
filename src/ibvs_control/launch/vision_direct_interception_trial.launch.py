@@ -119,6 +119,7 @@ def generate_launch_description() -> LaunchDescription:
             '/camera/camera_info',
             '/interception/vision/raw_feature',
             '/interception/observer/state',
+            '/interception/observer/bootstrap',
             '/interception/observer/reset',
             '/interception/control/debug',
             '/interception/target/green_confirmed',

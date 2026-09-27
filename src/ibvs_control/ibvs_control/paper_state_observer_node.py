@@ -3,7 +3,11 @@
 import math
 from typing import Optional
 
-from interception_interfaces.msg import ObserverState, VisionFeature
+from interception_interfaces.msg import (
+    ObserverBootstrap,
+    ObserverState,
+    VisionFeature,
+)
 import numpy as np
 from px4_msgs.msg import SensorCombined, VehicleAttitude
 import rclpy
@@ -23,6 +27,7 @@ from ibvs_control.frames import (
     rotation_to_quaternion_wxyz,
 )
 from ibvs_control.paper_state_observer import (
+    InterceptionState18,
     ObserverConfig,
     ObserverNoise,
     ObserverSnapshot,
@@ -76,11 +81,17 @@ class PaperStateObserverNode(Node):
         self.require_interception_reset = bool(
             self.get_parameter('require_interception_reset').value
         )
+        self.require_range_bootstrap = bool(
+            self.get_parameter('require_range_bootstrap').value
+        )
+        self.bootstrap_max_age_s = self._positive('bootstrap_max_age_s')
         # Paper x(0) belongs to the beginning of interception, after takeoff
-        # and visual alignment.  Do not let pre-flight/search imagery create
+        # and a safe visual lock.  Do not let pre-flight/search imagery create
         # an estimate that is already stale when rate control starts.
         self.initialization_armed = not self.require_interception_reset
         self.initial_q_b_to_e: Optional[tuple] = None
+        self.pending_bootstrap: Optional[ObserverBootstrap] = None
+        self.reset_requested_ns: Optional[int] = None
         # IMU runs faster than the 50 Hz DKF.  Each timer cycle groups all
         # queued IMU propagation substeps into one paper discrete-time block.
         self.pending_imu_samples: list[
@@ -127,6 +138,12 @@ class PaperStateObserverNode(Node):
             self._reset_callback,
             10,
         )
+        self.create_subscription(
+            ObserverBootstrap,
+            str(self.get_parameter('bootstrap_topic').value),
+            self._bootstrap_callback,
+            10,
+        )
         dkf_update_rate_hz = self._positive('dkf_update_rate_hz')
         self.create_timer(1.0 / dkf_update_rate_hz, self._dkf_callback)
         self.get_logger().info(
@@ -151,6 +168,11 @@ class PaperStateObserverNode(Node):
             '/interception/observer/reset',
         )
         self.declare_parameter('require_interception_reset', True)
+        self.declare_parameter('require_range_bootstrap', True)
+        self.declare_parameter(
+            'bootstrap_topic', '/interception/observer/bootstrap'
+        )
+        self.declare_parameter('bootstrap_max_age_s', 0.5)
         # The 12 m depth prior matches the nominal experiment geometry. It is
         # deliberately a parameter, not a target-world-state subscription.
         self.declare_parameter('initial_camera_depth_m', 12.0)
@@ -187,9 +209,10 @@ class PaperStateObserverNode(Node):
             self._log_error_once(str(error))
 
     def _reset_callback(self, _message: Empty) -> None:
-        """Reset at the stabilized interception start, not during takeoff."""
+        """Reset at the visually authorized start, not during takeoff."""
         self.observer.reset()
         self.initialization_armed = True
+        self.reset_requested_ns = self.get_clock().now().nanoseconds
         self.pending_imu_samples.clear()
         self.pending_feature = None
         self.last_imu_timestamp_us = None
@@ -198,6 +221,39 @@ class PaperStateObserverNode(Node):
         self.get_logger().info(
             'Observer reset requested; waiting for the next valid image'
         )
+
+    def _bootstrap_callback(self, message: ObserverBootstrap) -> None:
+        """Keep a fresh, geometrically estimated state for the next reset."""
+        if self.observer.initialized:
+            return
+        try:
+            stamp_ns = _stamp_ns(message.stamp)
+            age_s = (
+                self.get_clock().now().nanoseconds - stamp_ns
+            ) * 1e-9
+            relative = np.asarray(
+                (message.p_r.x, message.p_r.y, message.p_r.z,
+                 message.v_r.x, message.v_r.y, message.v_r.z),
+                dtype=float,
+            )
+            covariance = np.asarray(
+                message.relative_covariance, dtype=float
+            ).reshape((6, 6))
+            if (
+                stamp_ns <= 0
+                or not -0.05 <= age_s <= self.bootstrap_max_age_s
+                or not np.all(np.isfinite(relative))
+                or not np.all(np.isfinite(covariance))
+                or not np.allclose(covariance, covariance.T, atol=1e-8)
+                or np.linalg.eigvalsh(covariance)[0] < -1e-8
+                or message.range_m <= self.observer.config.minimum_depth_m
+                or not math.isfinite(message.range_std_m)
+                or message.range_std_m <= 0.0
+            ):
+                raise ValueError('invalid or stale range bootstrap')
+            self.pending_bootstrap = message
+        except (TypeError, ValueError, np.linalg.LinAlgError) as error:
+            self._log_error_once(str(error))
 
     def _feature_callback(self, message: VisionFeature) -> None:
         self.image_update_count += 1
@@ -219,20 +275,81 @@ class PaperStateObserverNode(Node):
                         message.reason or 'image_invalid'
                     )
                     return
-                snapshot = self.observer.initialize_from_image(
-                    self.initial_q_b_to_e,
-                    image_xy,
-                    self.initial_depth_m,
-                    self.initial_v_r_e,
-                    self.initial_b_gyr_b,
-                    self.initial_b_acc_b,
-                )
+                bootstrap = self.pending_bootstrap
+                if self.require_range_bootstrap:
+                    if bootstrap is None:
+                        self._publish_uninitialized(
+                            'waiting_for_range_bootstrap'
+                        )
+                        return
+                    capture_ns = _stamp_ns(message.capture_stamp)
+                    stamp_ns = _stamp_ns(bootstrap.stamp)
+                    age_s = (
+                        self.get_clock().now().nanoseconds - stamp_ns
+                    ) * 1e-9
+                    if (
+                        capture_ns <= 0
+                        or (self.reset_requested_ns is not None
+                            and capture_ns < self.reset_requested_ns)
+                        or not 0.0 <= age_s <= self.bootstrap_max_age_s
+                        or abs(capture_ns - stamp_ns) * 1e-9
+                        > self.bootstrap_max_age_s
+                    ):
+                        self._publish_uninitialized(
+                            'waiting_for_fresh_bootstrap_image'
+                        )
+                        return
+                    dt_s = (capture_ns - stamp_ns) * 1e-9
+                    position = np.asarray(
+                        (bootstrap.p_r.x, bootstrap.p_r.y,
+                         bootstrap.p_r.z), dtype=float
+                    )
+                    velocity = np.asarray(
+                        (bootstrap.v_r.x, bootstrap.v_r.y,
+                         bootstrap.v_r.z), dtype=float
+                    )
+                    state = InterceptionState18(
+                        q=tuple(self.initial_q_b_to_e),
+                        p_r_e=tuple(position + velocity * dt_s),
+                        v_r_e=tuple(velocity),
+                        image_xy=tuple(image_xy),
+                        b_gyr_b=tuple(self.initial_b_gyr_b),
+                        b_acc_b=tuple(self.initial_b_acc_b),
+                    )
+                    transition = np.eye(6)
+                    transition[:3, 3:] = np.eye(3) * dt_s
+                    relative_covariance = np.asarray(
+                        bootstrap.relative_covariance, dtype=float
+                    ).reshape((6, 6))
+                    snapshot = self.observer.initialize(
+                        state,
+                        relative_covariance=(
+                            transition @ relative_covariance @ transition.T
+                        ),
+                    )
+                    self.pending_bootstrap = None
+                    initialization_reason = 'range_bootstrap_initialized'
+                else:
+                    snapshot = self.observer.initialize_from_image(
+                        self.initial_q_b_to_e,
+                        image_xy,
+                        self.initial_depth_m,
+                        self.initial_v_r_e,
+                        self.initial_b_gyr_b,
+                        self.initial_b_acc_b,
+                    )
+                    initialization_reason = 'initialized'
                 self.last_imu_timestamp_us = None
+                source = (
+                    'multi-view range bootstrap'
+                    if self.require_range_bootstrap
+                    else f'{self.initial_depth_m:.2f} m depth prior'
+                )
                 self.get_logger().info(
                     '18-state observer initialized from attitude, image, and '
-                    f'{self.initial_depth_m:.2f} m depth prior'
+                    + source
                 )
-                self._publish(snapshot, 'initialized')
+                self._publish(snapshot, initialization_reason)
                 return
             # The 50 Hz DKF timer consumes at most one newest 30 Hz image.
             self.pending_feature = message
@@ -394,6 +511,10 @@ class PaperStateObserverNode(Node):
 
 def _assign_vector(message, values) -> None:
     message.x, message.y, message.z = (float(value) for value in values)
+
+
+def _stamp_ns(stamp) -> int:
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
 
 def main(args=None) -> None:

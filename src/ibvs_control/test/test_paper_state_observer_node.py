@@ -10,11 +10,12 @@ from ibvs_control.paper_state_observer_node import PaperStateObserverNode
 
 
 def test_node_waits_for_interception_reset_then_updates_online() -> None:
-    """Paper x(0) is created after alignment, never from search imagery."""
+    """Explicit depth-prior mode still supports delayed DKF updates."""
     rclpy.init()
     node = None
     try:
         node = PaperStateObserverNode()
+        node.require_range_bootstrap = False
         attitude = VehicleAttitude()
         attitude.q = [1.0, 0.0, 0.0, 0.0]
         node._attitude_callback(attitude)
