@@ -6,18 +6,22 @@ vision_interception_coordinator:
 
     # 论文式(19)：相对速度误差反馈增益。
     # k2越大，速度修正和制动越强；过大会在接触前急刹。
-    paper_k2: 3.0
+    paper_k2: 2.5
+
+    # 位置误差项 -position_gain*p_r 的强度。原论文取1.0；本次静止目标
+    # 试验降低远距离加速，避免近距离才要求与前视相机视线冲突的大倾角制动。
+    position_gain: 0.8
 
     # 论文式(12)的Barrier边界k_b，本项目用角度配置：
     # k_b=1-cos(safe_los_angle_deg)。数值减小可让控制器更早抑制目标偏移。
-    safe_los_angle_deg: 30.0
+    safe_los_angle_deg: 20.0
 
     # 论文中的设计视线n_td；0 deg表示沿前视相机光轴拦截。
     designed_los_pitch_deg: 0.0
 
     # 论文式(29)的角速度饱和上限omega_m(rad/s)。
     # 越大姿态响应越快，但会在拦截启动时使目标迅速偏离图像中心。
-    omega_limit_rad_s: 1.3
+    omega_limit_rad_s: 0.8
 
     # 最大总推力(N)，必须与Gazebo/电机模型一致。
     # 该参数同时作为论文控制器的推力饱和上限和PX4推力映射上限。

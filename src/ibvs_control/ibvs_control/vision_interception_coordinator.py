@@ -112,6 +112,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.paper_config = OuterLoopConfig(
             k1=self._float_parameter('paper_k1'),
             k2=self._float_parameter('paper_k2'),
+            position_gain=self._float_parameter('position_gain'),
             k_b=self.k_b,
             mass_kg=self._float_parameter('mass_kg'),
             thrust_max_n=self._float_parameter('thrust_max_n'),
@@ -344,9 +345,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 tilt_limit_rad=math.radians(
                     self._float_parameter('interception_tilt_limit_deg')
                 ),
-                minimum_barrier_margin=self._float_parameter(
-                    'minimum_barrier_margin'
-                ),
                 post_hit_coast_duration_s=self._float_parameter(
                     'post_hit_coast_duration_s'
                 ),
@@ -503,6 +501,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('safe_los_angle_deg', 60.0)
         self.declare_parameter('paper_k1', 0.05)
         self.declare_parameter('paper_k2', 3.0)
+        self.declare_parameter('position_gain', 1.0)
         self.declare_parameter('designed_los_pitch_deg', 0.0)
         self.declare_parameter(
             'camera_to_body_rotation',

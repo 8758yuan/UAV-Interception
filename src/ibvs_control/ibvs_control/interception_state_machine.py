@@ -46,7 +46,6 @@ class InterceptionGateConfig:
     speed_limit_m_s: float = 21.0
     # 拦截阶段最大倾角，单位rad，对应55deg。
     tilt_limit_rad: float = math.radians(55.0)
-    minimum_barrier_margin: float = 0.02
     post_hit_coast_duration_s: float = 2.0
     recovery_settle_time_s: float = 1.0
     recovery_timeout_s: float = 15.0
@@ -60,7 +59,6 @@ class InterceptionGateConfig:
             'command_timeout_s': self.command_timeout_s,
             'speed_limit_m_s': self.speed_limit_m_s,
             'tilt_limit_rad': self.tilt_limit_rad,
-            'minimum_barrier_margin': self.minimum_barrier_margin,
             'post_hit_coast_duration_s': self.post_hit_coast_duration_s,
             'recovery_settle_time_s': self.recovery_settle_time_s,
             'recovery_timeout_s': self.recovery_timeout_s,
@@ -286,7 +284,9 @@ class InterceptionStateMachine:
             return 'speed_limit'
         if tilt_rad > self.config.tilt_limit_rad:
             return 'tilt_limit'
-        if barrier_margin < self.config.minimum_barrier_margin:
+        # The controller's own Barrier domain ends at zero.  A positive
+        # reserve here can abort an otherwise valid near-contact trajectory.
+        if barrier_margin <= 0.0:
             return 'barrier_margin'
         return ''
 

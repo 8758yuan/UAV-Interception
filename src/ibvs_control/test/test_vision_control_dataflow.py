@@ -123,8 +123,8 @@ def test_vehicle_tilt_guard_does_not_shadow_interception_limit() -> None:
     ]
 
 
-def test_flight_velocity_gain_matches_airframe_bandwidth_baseline() -> None:
-    """Do not restore the high-gain braking reversal seen near contact."""
+def test_flight_gains_limit_far_range_acceleration() -> None:
+    """Keep the static-target approach gain below the failed trial's value."""
     config_path = (
         Path(__file__).parents[1]
         / 'config'
@@ -133,7 +133,8 @@ def test_flight_velocity_gain_matches_airframe_bandwidth_baseline() -> None:
     parameters = yaml.safe_load(config_path.read_text(encoding='utf-8'))[
         'vision_interception_coordinator'
     ]['ros__parameters']
-    assert parameters['paper_k2'] == 3.0
+    assert parameters['paper_k2'] == 2.5
+    assert parameters['position_gain'] == 0.3
 
 
 def test_observer_uses_only_onboard_imu_attitude_and_image() -> None:
@@ -197,6 +198,7 @@ def test_paper_design_parameters_have_one_configuration_source() -> None:
     assert set(controller) == {
         'paper_k1',
         'paper_k2',
+        'position_gain',
         'safe_los_angle_deg',
         'designed_los_pitch_deg',
         'omega_limit_rad_s',
@@ -217,6 +219,7 @@ def test_paper_design_parameters_have_one_configuration_source() -> None:
         parameters = next(iter(contents.values()))['ros__parameters']
         assert not set(parameters).intersection(controller)
         assert not set(parameters).intersection(observer)
+
 
 def test_static_and_moving_targets_default_to_camera_centre_height() -> None:
     """The target defaults must not recreate the old below-camera impact."""

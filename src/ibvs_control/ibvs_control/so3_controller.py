@@ -9,7 +9,12 @@ import numpy as np
 
 @dataclass(frozen=True)
 class OuterLoopConfig:
-    """Tuning and vehicle parameters used by the 50 Hz outer loop."""
+    """Tuning and vehicle parameters used by the 50 Hz outer loop.
+
+    position_gain scales the position Lyapunov term.  The paper uses 1.0;
+    any positive value retains cancellation with -position_gain * p_r in
+    the relative-velocity feedback equation.
+    """
 
     k1: float
     k2: float
@@ -17,12 +22,17 @@ class OuterLoopConfig:
     mass_kg: float
     thrust_max_n: float
     gravity_m_s2: float = 9.80665
+    position_gain: float = 1.0
 
     def validate(self) -> None:
         """Reject nonphysical gains and limits."""
-        positive = (self.k1, self.k2, self.k_b, self.mass_kg)
+        positive = (
+            self.k1, self.k2, self.k_b, self.mass_kg, self.position_gain
+        )
         if not all(math.isfinite(value) and value > 0.0 for value in positive):
-            raise ValueError('k1, k2, k_b, and mass_kg must be positive')
+            raise ValueError(
+                'k1, k2, k_b, mass_kg, and position_gain must be positive'
+            )
         if not 0.0 < self.k_b < 2.0:
             raise ValueError('k_b must be within (0, 2)')
         if not math.isfinite(self.thrust_max_n) or self.thrust_max_n <= 0.0:
@@ -93,7 +103,7 @@ def compute_outer_loop(
     target_acceleration_e: Sequence[float] = (0.0, 0.0, 0.0),
     drag_force_e: Sequence[float] = (0.0, 0.0, 0.0),
 ) -> OuterLoopResult:
-    """Evaluate paper equations (13), (19), and (21)--(23)."""
+    """Evaluate equations (13), (19), and (21)--(23) with position gain."""
     config.validate()
     p_r = _vector3(p_r_e, 'p_r_e')
     v_r = _vector3(v_r_e, 'v_r_e')
@@ -117,7 +127,7 @@ def compute_outer_loop(
     acceleration_d = (
         -config.k1 * v_r
         - config.k2 * z2
-        - p_r
+        - config.position_gain * p_r
         + barrier_gain * config.mass_kg / distance_m * projection @ n_td
         + a_target
     )

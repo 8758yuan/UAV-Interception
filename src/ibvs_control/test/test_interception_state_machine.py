@@ -143,13 +143,17 @@ def test_active_safety_violation_aborts_to_land() -> None:
     assert machine.terminal_reason == 'command_timeout'
 
 
-def test_barrier_violation_aborts_instead_of_raising() -> None:
-    """A negative barrier margin is a controlled flight abort condition."""
+def test_positive_barrier_margin_remains_active_until_domain_boundary() -> None:
+    """A valid near-boundary command is not stopped by an extra reserve."""
     machine = InterceptionStateMachine(
         InterceptionGateConfig(enable_control=True)
     )
     _safe_step(machine, 0.0)
-    actions = _safe_step(machine, 0.1, barrier_margin=-0.01)
+    _safe_step(machine, 1.0)
+    actions = _safe_step(machine, 1.1, barrier_margin=0.001)
+    assert actions == (InterceptionAction.STREAM_RATE_SETPOINT,)
+    assert machine.phase == InterceptionPhase.ACTIVE
+    actions = _safe_step(machine, 1.2, barrier_margin=0.0)
     assert actions == (InterceptionAction.REQUEST_LAND,)
     assert machine.phase == InterceptionPhase.ABORT
     assert machine.terminal_reason == 'barrier_margin'

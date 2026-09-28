@@ -86,7 +86,7 @@ def test_default_outer_loop_does_not_clip_paper_acceleration() -> None:
         expected_x = (
             -node.paper_config.k1 * 2.2
             - node.paper_config.k2 * z2_x
-            - -7.0
+            - node.paper_config.position_gain * -7.0
         )
         assert result.acceleration_d_e == pytest.approx(
             (expected_x, 0.0, 0.0)

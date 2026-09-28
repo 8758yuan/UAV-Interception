@@ -94,6 +94,25 @@ def test_aligned_outer_loop_has_zero_los_rate() -> None:
     )
 
 
+def test_position_gain_reduces_far_range_acceleration() -> None:
+    """A smaller position gain prevents large initial acceleration demand."""
+    reduced = OuterLoopConfig(0.05, 2.5, 0.06, 2.0, 40.0, position_gain=0.3)
+    original = OuterLoopConfig(0.05, 2.5, 0.06, 2.0, 40.0)
+    args = ((-23.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0), (1.0, 0.0, 0.0), np.eye(3))
+    slower = compute_outer_loop(*args, reduced)
+    baseline = compute_outer_loop(*args, original)
+    assert slower.acceleration_d_e[0] == pytest.approx(9.775)
+    assert baseline.acceleration_d_e[0] == pytest.approx(25.875)
+    assert slower.omega1_b == pytest.approx(baseline.omega1_b)
+
+
+def test_position_gain_must_be_positive() -> None:
+    with pytest.raises(ValueError, match='position_gain'):
+        OuterLoopConfig(0.05, 2.5, 0.06, 2.0, 40.0,
+                        position_gain=0.0).validate()
+
+
 def test_los_rate_rotates_designed_los_toward_target() -> None:
     angle = math.radians(10.0)
     target_los = (math.cos(angle), math.sin(angle), 0.0)

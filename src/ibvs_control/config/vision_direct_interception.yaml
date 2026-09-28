@@ -166,7 +166,7 @@ vision_interception_coordinator:
     speed_limit_m_s: 21.0
     # 拦截阶段最大倾角，超过后触发安全中止，单位deg。
     interception_tilt_limit_deg: 55.0
-    # Barrier安全裕度下限；增大更保守，也更容易提前中止。
+    # 仅用于视觉锁定的启动/解除余量；主动拦截只在越过控制律Barrier边界时中止。
     minimum_barrier_margin: 0.02
     # 碰撞后保持原速度时间(s)，用于越过目标；过长会增加飞行距离。
     post_hit_coast_duration_s: 0.20
