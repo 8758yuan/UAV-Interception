@@ -196,3 +196,95 @@ def test_inner_loop_recomputes_equations_23_26_and_28() -> None:
     assert np.linalg.norm(inner.omega_d_b) == pytest.approx(0.1)
     assert inner.rate_saturated
     assert 0.0 <= inner.thrust_n <= CONFIG.thrust_max_n
+
+
+def test_radial_original_reference_recovers_full_controller_outputs() -> None:
+    """Restoring k1*d requires its derivative, even with transverse motion."""
+    rng = np.random.default_rng(20261014)
+    for _ in range(50):
+        p_r = rng.normal(size=3) * 10.0
+        v_r = rng.normal(size=3) * 2.0
+        n = -p_r / np.linalg.norm(p_r)
+        # Optical LOS differs from geometry, as with a displaced camera.
+        los = n + (0.01, -0.02, 0.0)
+        args = (p_r, v_r, los, n, np.eye(3), CONFIG)
+        baseline = compute_outer_loop(*args)
+        restored = compute_outer_loop(
+            *args,
+            approach_speed_m_s=CONFIG.k1 * np.linalg.norm(p_r),
+            approach_acceleration_m_s2=-CONFIG.k1 * float(n @ v_r),
+        )
+        for name in vars(baseline):
+            assert getattr(restored, name) == pytest.approx(
+                getattr(baseline, name), abs=1e-12
+            )
+        baseline_inner = compute_inner_loop(baseline, np.eye(3), CONFIG, 0.8)
+        restored_inner = compute_inner_loop(restored, np.eye(3), CONFIG, 0.8)
+        for name in vars(baseline_inner):
+            assert getattr(restored_inner, name) == pytest.approx(
+                getattr(baseline_inner, name), abs=1e-12
+            )
+
+
+def test_planned_velocity_derivative_includes_changing_target_direction() -> None:
+    """Include v_c*n_dot when the geometric direction moves."""
+    p_r = np.array((-3.0, 0.4, -0.2))
+    v_r = np.array((0.7, 0.9, -0.3))
+    n = -p_r / np.linalg.norm(p_r)
+    speed, acceleration = 1.2, 0.3
+    result = compute_outer_loop(
+        p_r, v_r, n, n, np.eye(3), CONFIG,
+        approach_speed_m_s=speed,
+        approach_acceleration_m_s2=acceleration,
+    )
+    epsilon = 1e-6
+
+    def desired_velocity(t):
+        position = p_r + t * v_r
+        return (
+            -(speed + t * acceleration) * position / np.linalg.norm(position)
+        )
+
+    derivative = (
+        desired_velocity(epsilon) - desired_velocity(-epsilon)
+    ) / (2.0 * epsilon)
+    assert result.relative_acceleration_d_e == pytest.approx(
+        derivative, abs=1e-9
+    )
+    assert result.acceleration_d_e == pytest.approx(
+        derivative - CONFIG.k2 * (v_r - speed * n) - CONFIG.position_gain * p_r
+    )
+
+
+def test_planning_changes_force_and_rates_without_changing_visual_feedback() -> None:
+    """Pass the radial reference through the existing SO(3) and thrust chain."""
+    attitude = rodrigues((0.0, 1.0, 0.0), 0.08)
+    los = (math.cos(0.03), math.sin(0.03), 0.0)
+    args = ((-3.0, 0.0, 0.0), (0.15, 0.0, 0.0), los,
+            (1.0, 0.0, 0.0), attitude, CONFIG)
+    baseline = compute_outer_loop(*args)
+    planned = compute_outer_loop(
+        *args, approach_speed_m_s=0.8, approach_acceleration_m_s2=0.1
+    )
+    assert planned.omega1_b == pytest.approx(baseline.omega1_b)
+    assert not np.allclose(planned.acceleration_d_e, baseline.acceleration_d_e)
+    assert not np.allclose(
+        planned.attitude_d_b_to_e, baseline.attitude_d_b_to_e
+    )
+    assert planned.thrust_n != pytest.approx(baseline.thrust_n)
+    baseline_inner = compute_inner_loop(baseline, attitude, CONFIG, 0.8)
+    planned_inner = compute_inner_loop(planned, attitude, CONFIG, 0.8)
+    assert not np.allclose(planned_inner.omega_d_b, baseline_inner.omega_d_b)
+
+
+@pytest.mark.parametrize('reference', [
+    {'approach_speed_m_s': 1.0},
+    {'approach_acceleration_m_s2': 0.0},
+    {'approach_speed_m_s': math.nan, 'approach_acceleration_m_s2': 0.0},
+])
+def test_incomplete_or_nonfinite_radial_reference_is_rejected(reference) -> None:
+    with pytest.raises(ValueError, match='both be finite'):
+        compute_outer_loop(
+            (-3.0, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0), np.eye(3), CONFIG, **reference,
+        )

@@ -2,6 +2,9 @@
 
 import math
 
+import pytest
+
+from ibvs_control.approach_profile import ApproachProfileConfig
 from ibvs_control.observer_closed_loop import simulate_observer_closed_loop
 from ibvs_control.offline_interception import default_controller_config
 
@@ -30,5 +33,25 @@ def test_no_delay_observer_controller_closes_moving_target_loop() -> None:
     assert result.safe
     assert result.reason == 'hit'
     assert result.target_distance_m > 4.0
+    assert result.maximum_image_radius < math.tan(math.radians(39.0))
+    assert result.maximum_velocity_error_m_s < 0.35
+
+
+@pytest.mark.parametrize('target_velocity', [
+    (0.0, 0.0, 0.0), (0.0, 0.15, 0.0),
+])
+def test_adaptive_profile_closes_observer_loop_within_original_duration(
+    target_velocity,
+) -> None:
+    """Exercise the new reference through camera, observer, SO(3) and plant."""
+    result = simulate_observer_closed_loop(
+        default_controller_config(),
+        target_velocity_e=target_velocity,
+        approach_profile=ApproachProfileConfig(),
+    )
+    assert result.hit
+    assert result.safe
+    assert result.reason == 'hit'
+    assert result.elapsed_s < 40.0
     assert result.maximum_image_radius < math.tan(math.radians(39.0))
     assert result.maximum_velocity_error_m_s < 0.35

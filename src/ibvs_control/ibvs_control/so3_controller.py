@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 import math
-from typing import Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 
@@ -47,6 +47,8 @@ class OuterLoopResult:
 
     z1: float
     z2_e: np.ndarray
+    relative_velocity_d_e: np.ndarray
+    relative_acceleration_d_e: np.ndarray
     acceleration_d_e: np.ndarray
     thrust_direction_d_e: np.ndarray
     attitude_d_b_to_e: np.ndarray
@@ -102,8 +104,10 @@ def compute_outer_loop(
     *,
     target_acceleration_e: Sequence[float] = (0.0, 0.0, 0.0),
     drag_force_e: Sequence[float] = (0.0, 0.0, 0.0),
+    approach_speed_m_s: Optional[float] = None,
+    approach_acceleration_m_s2: Optional[float] = None,
 ) -> OuterLoopResult:
-    """Evaluate equations (13), (19), and (21)--(23) with position gain."""
+    """Evaluate the paper law with an optional complete radial reference."""
     config.validate()
     p_r = _vector3(p_r_e, 'p_r_e')
     v_r = _vector3(v_r_e, 'v_r_e')
@@ -122,10 +126,29 @@ def compute_outer_loop(
         raise ValueError('LOS error is outside the barrier domain')
     barrier_gain = z1 / denominator
 
-    z2 = v_r + config.k1 * p_r
+    if approach_speed_m_s is None and approach_acceleration_m_s2 is None:
+        relative_velocity_d = -config.k1 * p_r
+        relative_acceleration_d = -config.k1 * v_r
+        z2 = v_r + config.k1 * p_r
+    else:
+        if (
+            approach_speed_m_s is None or approach_acceleration_m_s2 is None
+            or not math.isfinite(approach_speed_m_s)
+            or not math.isfinite(approach_acceleration_m_s2)
+        ):
+            raise ValueError(
+                'approach speed and acceleration must both be finite'
+            )
+        n = -p_r / distance_m
+        n_dot = -(v_r - n * float(n @ v_r)) / distance_m
+        relative_velocity_d = approach_speed_m_s * n
+        relative_acceleration_d = (
+            approach_acceleration_m_s2 * n + approach_speed_m_s * n_dot
+        )
+        z2 = v_r - relative_velocity_d
     projection = -np.eye(3) + np.outer(n_t, n_t)
     acceleration_d = (
-        -config.k1 * v_r
+        relative_acceleration_d
         - config.k2 * z2
         - config.position_gain * p_r
         + barrier_gain * config.mass_kg / distance_m * projection @ n_td
@@ -143,6 +166,8 @@ def compute_outer_loop(
     return OuterLoopResult(
         z1=z1,
         z2_e=z2,
+        relative_velocity_d_e=relative_velocity_d,
+        relative_acceleration_d_e=relative_acceleration_d,
         acceleration_d_e=acceleration_d,
         thrust_direction_d_e=n_fd,
         attitude_d_b_to_e=attitude_d,

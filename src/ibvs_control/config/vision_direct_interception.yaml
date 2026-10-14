@@ -49,6 +49,20 @@ vision_interception_coordinator:
     timer_period_s: 0.005
     # 论文外环频率(Hz)，当前按论文设为50 Hz。
     outer_loop_hz: 50.0
+    # V3连续一维接近规划；false同时恢复原期望速度及完整导数。
+    # 以下为初始研究参数，尚未经过高速PX4/Gazebo调参。
+    approach_profile:
+      enabled: true
+      horizon_s: 2.0
+      replan_hz: 5.0
+      # rho=exp(-alpha*z1-beta*||v_perp||^2)，beta单位s^2/m^2。
+      alpha: 10.0
+      beta: 0.1
+      # 先从零额外远距速度开始；两项length是连续模型的距离尺度。
+      delta_v_m_s: 0.0
+      boost_length_m: 10.0
+      terminal_length_m: 2.0
+      terminal_speed_m_s: 0.45
     # 起飞和初始搜索高度(m)，不要求与目标高度相同。
     target_altitude_m: 10.0
     # 起飞阶段目标偏航角(rad)；进入搜索后由视觉搜索接管。

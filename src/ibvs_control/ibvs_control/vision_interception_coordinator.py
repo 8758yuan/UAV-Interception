@@ -27,6 +27,11 @@ from rclpy.qos import (
 )
 from std_msgs.msg import Bool, Empty
 
+from ibvs_control.approach_profile import (
+    ApproachPlanner,
+    ApproachProfileConfig,
+    ApproachReference,
+)
 from ibvs_control.frames import (
     ned_to_enu,
     px4_quaternion_to_enu_flu_rotation,
@@ -118,6 +123,16 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             thrust_max_n=self._float_parameter('thrust_max_n'),
         )
         self.paper_config.validate()
+        self.approach_planner: Optional[ApproachPlanner] = None
+        self.approach_reference: Optional[ApproachReference] = None
+        if bool(self.get_parameter('approach_profile.enabled').value):
+            profile_config = ApproachProfileConfig(**{
+                name: self._float_parameter(f'approach_profile.{name}')
+                for name in ApproachProfileConfig.__dataclass_fields__
+            })
+            self.approach_planner = ApproachPlanner(
+                profile_config, self.paper_config.k1
+            )
         drag_coefficients = np.asarray(
             self.get_parameter('drag_coefficients_b_kg_s').value,
             dtype=float,
@@ -502,6 +517,9 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('paper_k1', 0.05)
         self.declare_parameter('paper_k2', 3.0)
         self.declare_parameter('position_gain', 1.0)
+        self.declare_parameter('approach_profile.enabled', False)
+        for name, value in vars(ApproachProfileConfig()).items():
+            self.declare_parameter(f'approach_profile.{name}', value)
         self.declare_parameter('designed_los_pitch_deg', 0.0)
         self.declare_parameter(
             'camera_to_body_rotation',
@@ -885,6 +903,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 outer_due = bool(
                     self.visual_result is None
                     or self.last_outer_ns is None
+                    or now_ns < self.last_outer_ns
                     or now_ns - self.last_outer_ns >= self.outer_period_ns
                 )
                 if outer_due:
@@ -894,6 +913,15 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                         self.camera_to_body_rotation,
                     )
                     designed_los_e = vehicle_attitude @ self.designed_los_b
+                    reference = None
+                    if self.approach_planner is not None:
+                        reference = self.approach_planner.update(
+                            now_ns * 1e-9, p_r_e, v_r_e,
+                            1.0 - float(
+                                (designed_los_e / np.linalg.norm(designed_los_e))
+                                @ (los_e / np.linalg.norm(los_e))
+                            ),
+                        )
                     paper_result = compute_outer_loop(
                         p_r_e,
                         v_r_e,
@@ -902,7 +930,16 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                         vehicle_attitude,
                         self.paper_config,
                         drag_force_e=drag_force_e,
+                        approach_speed_m_s=(
+                            reference.speed_m_s if reference is not None
+                            else None
+                        ),
+                        approach_acceleration_m_s2=(
+                            reference.acceleration_m_s2
+                            if reference is not None else None
+                        ),
                     )
+                    self.approach_reference = reference
                     self.last_outer_ns = now_ns
                 else:
                     paper_result = self.visual_result
@@ -1108,6 +1145,43 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         if result is not None and inner is not None:
             message.z1 = result.z1
             _assign_vector(message.z2, result.z2_e)
+            _assign_vector(
+                message.relative_velocity_d, result.relative_velocity_d_e
+            )
+            _assign_vector(
+                message.relative_acceleration_d,
+                result.relative_acceleration_d_e,
+            )
+            observer = self.observer_state
+            if observer is not None:
+                p_r, v_r, _ = self._controller_state(observer)
+                distance = float(np.linalg.norm(p_r))
+                message.estimated_distance_m = distance
+                if distance > 1e-6:
+                    message.closing_speed_m_s = float((-p_r / distance) @ v_r)
+            reference = self.approach_reference
+            if reference is not None:
+                message.approach_profile_enabled = True
+                message.reference_distance_m = reference.distance_m
+                message.approach_speed_m_s = reference.speed_m_s
+                message.approach_acceleration_m_s2 = (
+                    reference.acceleration_m_s2
+                )
+                planner = self.approach_planner
+                message.approach_target_speed_m_s = planner.target_speed_m_s
+                message.approach_weight = planner.weight
+                message.approach_horizon_s = planner.segment.horizon_s
+                message.approach_replan_count = planner.replan_count
+            else:
+                message.reference_distance_m = message.estimated_distance_m
+                message.approach_speed_m_s = (
+                    self.paper_config.k1 * message.estimated_distance_m
+                )
+                message.approach_acceleration_m_s2 = (
+                    -self.paper_config.k1 * message.closing_speed_m_s
+                )
+                message.approach_target_speed_m_s = message.approach_speed_m_s
+                message.approach_weight = 1.0
             _assign_vector(message.acceleration_d, result.acceleration_d_e)
             message.attitude_d = tuple(result.attitude_d_b_to_e.reshape(9))
             _assign_vector(message.omega1_b, result.omega1_b)
@@ -1199,6 +1273,9 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.px4_command = None
         self.command_computed_ns = None
         self.last_outer_ns = None
+        self.approach_reference = None
+        if self.approach_planner is not None:
+            self.approach_planner.reset()
         self.contact_confirmed = False
         self.control_reason = 'waiting_for_interception_observer_reset'
         self.get_logger().warning(
