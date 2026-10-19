@@ -94,7 +94,6 @@ class ObserverConfig:
         -1.0, 0.0, 0.0,
         0.0, -1.0, 0.0,
     )
-    minimum_depth_m: float = 0.25
     maximum_dt_s: float = 0.05
     dkf_delay_steps: int = 0
 
@@ -113,13 +112,8 @@ class ObserverConfig:
             raise ValueError(
                 'camera_to_body_rotation must have determinant +1'
             )
-        for name in (
-            'minimum_depth_m',
-            'maximum_dt_s',
-        ):
-            value = float(getattr(self, name))
-            if not math.isfinite(value) or value <= 0.0:
-                raise ValueError(f'{name} must be finite and positive')
+        if not math.isfinite(self.maximum_dt_s) or self.maximum_dt_s <= 0.0:
+            raise ValueError('maximum_dt_s must be finite and positive')
         value = self.dkf_delay_steps
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError('dkf_delay_steps must be a nonnegative integer')
@@ -567,10 +561,7 @@ class PaperStateObserver:
         earth_to_camera = self._r_c_to_b.T @ r_b_to_e.T
         target_c = earth_to_camera @ (-p_r)
         depth_m = float(target_c[2])
-        if (
-            not math.isfinite(depth_m)
-            or depth_m < self.config.minimum_depth_m
-        ):
+        if not math.isfinite(depth_m) or depth_m <= 0.0:
             raise ValueError(
                 'estimated target depth is invalid or behind camera'
             )

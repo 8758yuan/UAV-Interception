@@ -112,6 +112,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.paper_config = OuterLoopConfig(
             k1=self._float_parameter('paper_k1'),
             k2=self._float_parameter('paper_k2'),
+            v_c=self._float_parameter('v_c'),
             position_gain=self._float_parameter('position_gain'),
             k_b=self.k_b,
             mass_kg=self._float_parameter('mass_kg'),
@@ -501,6 +502,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('safe_los_angle_deg', 60.0)
         self.declare_parameter('paper_k1', 0.05)
         self.declare_parameter('paper_k2', 3.0)
+        self.declare_parameter('v_c', 0.5)
         self.declare_parameter('position_gain', 1.0)
         self.declare_parameter('designed_los_pitch_deg', 0.0)
         self.declare_parameter(
@@ -852,6 +854,11 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self._publish_debug()
 
     def _update_control(self, now_ns: int) -> None:
+        cached_outer = self.visual_result
+        self.visual_result = None
+        self.inner_result = None
+        self.px4_command = None
+        self.command_computed_ns = None
         observer = self.observer_state
         paper_result: Optional[OuterLoopResult] = None
         paper_inner: Optional[InnerLoopResult] = None
@@ -883,7 +890,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                     self.drag_coefficients_b,
                 )
                 outer_due = bool(
-                    self.visual_result is None
+                    cached_outer is None
                     or self.last_outer_ns is None
                     or now_ns < self.last_outer_ns
                     or now_ns - self.last_outer_ns >= self.outer_period_ns
@@ -906,7 +913,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                     )
                     self.last_outer_ns = now_ns
                 else:
-                    paper_result = self.visual_result
+                    paper_result = cached_outer
                 if paper_result is not None:
                     paper_inner = compute_inner_loop(
                         paper_result,
@@ -919,18 +926,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 self.control_reason = f'paper_observer_invalid: {error}'
 
         if paper_inner is None:
-            # Retain the most recent valid command for the bounded freshness
-            # window enforced by command_timeout_s. Clearing it here made a
-            # single invalid DKF sample abort immediately and bypassed that
-            # gate, including the minimum-depth singularity just before
-            # physical target contact.
-            if self.px4_command is not None:
-                if not self.control_reason.startswith(
-                    'holding_last_valid_command:'
-                ):
-                    self.control_reason = (
-                        f'holding_last_valid_command: {self.control_reason}'
-                    )
             return
 
         try:
@@ -941,10 +936,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 self.mapping,
             )
         except (TypeError, ValueError) as error:
-            self.control_reason = (
-                f'holding_last_valid_command: {error}'
-                if self.px4_command is not None else str(error)
-            )
+            self.control_reason = str(error)
             return
         self.visual_result = paper_result
         self.inner_result = paper_inner

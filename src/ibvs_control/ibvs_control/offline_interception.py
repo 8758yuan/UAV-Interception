@@ -190,6 +190,7 @@ def default_controller_config() -> OuterLoopConfig:
     return OuterLoopConfig(
         k1=0.02,
         k2=20.0,
+        v_c=0.1,
         k_b=1.0 - math.cos(math.radians(60.0)),
         mass_kg=2.0,
         thrust_max_n=26.9784,

@@ -512,6 +512,40 @@ def test_invalid_prediction_does_not_mutate_state() -> None:
     assert after.covariance == pytest.approx(before.covariance)
 
 
+@pytest.mark.parametrize('depth_m', (0.249, 0.1, 1e-6))
+def test_positive_depth_below_old_limit_still_predicts(depth_m) -> None:
+    observer = _initialized_observer(image_xy=(0.1, -0.05), depth_m=depth_m)
+    snapshot = observer.predict(
+        (0.0, 0.0, 0.0), (0.0, 0.0, GRAVITY), 0.005,
+    )
+    assert snapshot.prediction_count == 1
+    assert snapshot.state.p_r_e == pytest.approx(
+        (-depth_m, 0.1 * depth_m, -0.05 * depth_m)
+    )
+    assert snapshot.state.image_xy == pytest.approx((0.1, -0.05))
+    assert np.all(np.isfinite(snapshot.covariance))
+
+
+@pytest.mark.parametrize('depth_m', (0.0, -0.1))
+def test_nonpositive_depth_still_rejects_prediction(depth_m) -> None:
+    observer = PaperStateObserver()
+    observer.initialize(InterceptionState18(
+        q=(1.0, 0.0, 0.0, 0.0),
+        p_r_e=(-depth_m, 0.0, 0.0),
+        v_r_e=(0.0, 0.0, 0.0),
+        image_xy=(0.0, 0.0),
+        b_gyr_b=(0.0, 0.0, 0.0),
+        b_acc_b=(0.0, 0.0, 0.0),
+    ))
+    before = observer.snapshot()
+    with pytest.raises(ValueError, match='depth'):
+        observer.predict((0.0, 0.0, 0.0), (0.0, 0.0, GRAVITY), 0.005)
+    after = observer.snapshot()
+    assert after.state == before.state
+    assert after.covariance == pytest.approx(before.covariance)
+    assert after.prediction_count == 0
+
+
 def test_reset_discards_state_and_counters() -> None:
     observer = _initialized_observer()
     observer.predict((0.0, 0.0, 0.0), (0.0, 0.0, GRAVITY), 0.01)

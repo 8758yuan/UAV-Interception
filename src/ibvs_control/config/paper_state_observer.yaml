@@ -24,7 +24,5 @@ paper_state_observer:
     camera_to_body_rotation: [0.0, 0.0, 1.0,
                               -1.0, 0.0, 0.0,
                               0.0, -1.0, 0.0]
-    # 最小有效目标深度(m)，防止接近目标时出现除零或数值发散。
-    minimum_depth_m: 0.25
     # 单次IMU传播最大步长(s)；较大时间间隔会被拆分计算。
     maximum_dt_s: 0.05

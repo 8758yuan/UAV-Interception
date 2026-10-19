@@ -1,4 +1,4 @@
-"""Pure SO(3) interception controller equations from the paper."""
+"""SO(3) interception controller with a constant closing-speed reference."""
 
 from dataclasses import dataclass
 import math
@@ -14,6 +14,7 @@ class OuterLoopConfig:
     position_gain scales the position Lyapunov term.  The paper uses 1.0;
     any positive value retains cancellation with -position_gain * p_r in
     the relative-velocity feedback equation.
+    v_c is the positive constant closing-speed component in m/s.
     """
 
     k1: float
@@ -23,15 +24,17 @@ class OuterLoopConfig:
     thrust_max_n: float
     gravity_m_s2: float = 9.80665
     position_gain: float = 1.0
+    v_c: float = 0.5
 
     def validate(self) -> None:
         """Reject nonphysical gains and limits."""
         positive = (
-            self.k1, self.k2, self.k_b, self.mass_kg, self.position_gain
+            self.k1, self.k2, self.k_b, self.mass_kg, self.position_gain,
+            self.v_c,
         )
         if not all(math.isfinite(value) and value > 0.0 for value in positive):
             raise ValueError(
-                'k1, k2, k_b, mass_kg, and position_gain must be positive'
+                'k1, k2, k_b, mass_kg, position_gain, and v_c must be positive'
             )
         if not 0.0 < self.k_b < 2.0:
             raise ValueError('k_b must be within (0, 2)')
@@ -103,7 +106,7 @@ def compute_outer_loop(
     target_acceleration_e: Sequence[float] = (0.0, 0.0, 0.0),
     drag_force_e: Sequence[float] = (0.0, 0.0, 0.0),
 ) -> OuterLoopResult:
-    """Evaluate the paper outer-loop law with v_rd = -k1 * p_r."""
+    """Evaluate the IBVS law with v_rd = (k1 * distance + v_c) * (-p_r/d)."""
     config.validate()
     p_r = _vector3(p_r_e, 'p_r_e')
     v_r = _vector3(v_r_e, 'v_r_e')
@@ -122,10 +125,18 @@ def compute_outer_loop(
         raise ValueError('LOS error is outside the barrier domain')
     barrier_gain = z1 / denominator
 
-    z2 = v_r + config.k1 * p_r
+    # The reference uses geometric LOS; image LOS remains in the IBVS terms.
+    radial_direction = -p_r / distance_m
+    velocity_d = (config.k1 * distance_m + config.v_c) * radial_direction
+    transverse_velocity = v_r - radial_direction * (radial_direction @ v_r)
+    velocity_d_dot = (
+        -config.k1 * v_r
+        - (config.v_c / distance_m) * transverse_velocity
+    )
+    z2 = v_r - velocity_d
     projection = -np.eye(3) + np.outer(n_t, n_t)
     acceleration_d = (
-        -config.k1 * v_r
+        velocity_d_dot
         - config.k2 * z2
         - config.position_gain * p_r
         + barrier_gain * config.mass_kg / distance_m * projection @ n_td

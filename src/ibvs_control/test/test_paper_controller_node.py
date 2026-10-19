@@ -14,6 +14,7 @@ from interception_interfaces.msg import (
 )
 from px4_msgs.msg import VehicleOdometry
 from std_msgs.msg import Bool
+from ibvs_control import vision_interception_coordinator
 from ibvs_control.interception_state_machine import InterceptionPhase
 from ibvs_control.so3_controller import compute_outer_loop
 from ibvs_control.vision_interception_coordinator import (
@@ -101,6 +102,58 @@ def test_static_baseline_uses_camera_centre_designed_los() -> None:
             rclpy.shutdown()
 
 
+@pytest.mark.parametrize('failing_stage', (
+    'compute_outer_loop', 'compute_inner_loop', 'adapt_rate_thrust_command',
+))
+def test_control_failure_discards_previous_command_and_can_recompute(
+    monkeypatch, failing_stage,
+) -> None:
+    rclpy.init()
+    node = None
+    try:
+        node = VisionInterceptionCoordinator()
+        state = ObserverState()
+        state.initialized = True
+        state.valid = True
+        state.p_r.x = -12.0
+        state.image_xy = [0.0, 0.0]
+        node._observer_callback(state)
+        odometry = VehicleOdometry()
+        odometry.q = [1.0, 0.0, 0.0, 0.0]
+        node._odometry_callback(odometry)
+        now_ns = node.get_clock().now().nanoseconds
+        node._update_control(now_ns)
+        assert node.px4_command is not None
+
+        def fail(*args, **kwargs):
+            raise ValueError('invalid_control_input')
+
+        with monkeypatch.context() as fault:
+            fault.setattr(vision_interception_coordinator, failing_stage, fail)
+            node._update_control(now_ns + 20_000_000)
+        assert node.visual_result is None
+        assert node.inner_result is None
+        assert node.px4_command is None
+        assert node.command_computed_ns is None
+        assert 'invalid_control_input' in node.control_reason
+        published = []
+        monkeypatch.setattr(node, '_publish_px4_command', published.append)
+        node._publish_interception_setpoint()
+        assert not published
+
+        # A failure must also invalidate the outer cache, even within 20 ms.
+        node._update_control(now_ns + 25_000_000)
+        assert node.visual_result is not None
+        assert node.inner_result is not None
+        assert node.px4_command is not None
+        assert node.command_computed_ns == now_ns + 25_000_000
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
 def test_default_outer_loop_does_not_clip_paper_acceleration() -> None:
     """Equation (19) must reach the force calculation without scaling."""
     rclpy.init()
@@ -115,7 +168,7 @@ def test_default_outer_loop_does_not_clip_paper_acceleration() -> None:
             attitude_b_to_e=np.eye(3),
             config=node.paper_config,
         )
-        z2_x = 2.2 + node.paper_config.k1 * -7.0
+        z2_x = 2.2 - (node.paper_config.k1 * 7.0 + node.paper_config.v_c)
         expected_x = (
             -node.paper_config.k1 * 2.2
             - node.paper_config.k2 * z2_x
@@ -125,6 +178,19 @@ def test_default_outer_loop_does_not_clip_paper_acceleration() -> None:
             (expected_x, 0.0, 0.0)
         )
         assert np.linalg.norm(result.acceleration_d_e) > 0.5
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def test_ros_closing_speed_parameter_reaches_outer_loop() -> None:
+    rclpy.init(args=['--ros-args', '-p', 'v_c:=1.75'])
+    node = None
+    try:
+        node = VisionInterceptionCoordinator()
+        assert node.paper_config.v_c == pytest.approx(1.75)
     finally:
         if node is not None:
             node.destroy_node()

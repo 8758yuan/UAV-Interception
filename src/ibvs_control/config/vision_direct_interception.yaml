@@ -91,7 +91,7 @@ vision_interception_coordinator:
     # 整机最终倾角保护(deg)，应高于interception_tilt_limit_deg。
     max_tilt_deg: 60.0
 
-    # k1、k2、Barrier边界、设计视线、角速度上限和最大推力统一在
+    # k1、k2、v_c、Barrier边界、设计视线、角速度上限和最大推力统一在
     # design_parameters.yaml中调整。
     # 相机到FLU机体系旋转矩阵，按行展开；相机安装不变时勿调。
     camera_to_body_rotation: [0.0, 0.0, 1.0,

@@ -198,6 +198,7 @@ def test_paper_design_parameters_have_one_configuration_source() -> None:
     assert set(controller) == {
         'paper_k1',
         'paper_k2',
+        'v_c',
         'position_gain',
         'safe_los_angle_deg',
         'designed_los_pitch_deg',
@@ -271,8 +272,8 @@ def test_visual_search_rejects_stale_target_detection() -> None:
     assert coordinator._fresh_feature(1_200_000_001) is None
 
 
-def test_transient_invalid_observer_keeps_last_command_until_timeout() -> None:
-    """One bad near-impact DKF sample must use the command-age safety gate."""
+def test_invalid_observer_clears_cached_command() -> None:
+    """Invalid estimates cannot keep publishing the previous rate/thrust."""
     coordinator = object.__new__(
         vision_interception_coordinator.VisionInterceptionCoordinator
     )
@@ -289,13 +290,15 @@ def test_transient_invalid_observer_keeps_last_command_until_timeout() -> None:
 
     coordinator._update_control(456)
 
-    assert coordinator.visual_result is previous_result
-    assert coordinator.inner_result is previous_inner
-    assert coordinator.px4_command is previous_command
-    assert coordinator.command_computed_ns == 123
-    assert coordinator.control_reason.startswith(
-        'holding_last_valid_command:'
-    )
+    assert coordinator.visual_result is None
+    assert coordinator.inner_result is None
+    assert coordinator.px4_command is None
+    assert coordinator.command_computed_ns is None
+    assert coordinator.control_reason == 'estimated target depth is invalid'
+    published = []
+    coordinator._publish_px4_command = published.append
+    coordinator._publish_interception_setpoint()
+    assert not published
 
 
 def test_visual_search_configuration_is_enabled_for_flight() -> None:

@@ -50,7 +50,6 @@ class PaperStateObserverNode(Node):
             camera_to_body_rotation=tuple(
                 self._vector_parameter('camera_to_body_rotation', 9)
             ),
-            minimum_depth_m=self._positive('minimum_depth_m'),
             maximum_dt_s=self._positive('maximum_dt_s'),
             dkf_delay_steps=self._nonnegative_integer(
                 'dkf_delay_steps'
@@ -184,7 +183,6 @@ class PaperStateObserverNode(Node):
             'camera_to_body_rotation',
             [0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
         )
-        self.declare_parameter('minimum_depth_m', 0.25)
         self.declare_parameter('maximum_dt_s', 0.05)
         # The paper's practical DKF runs at 50 Hz and reports about 80 ms of
         # imaging/processing delay: D = round(0.080 * 50) = 4 DKF periods.
@@ -246,7 +244,8 @@ class PaperStateObserverNode(Node):
                 or not np.all(np.isfinite(covariance))
                 or not np.allclose(covariance, covariance.T, atol=1e-8)
                 or np.linalg.eigvalsh(covariance)[0] < -1e-8
-                or message.range_m <= self.observer.config.minimum_depth_m
+                or not math.isfinite(message.range_m)
+                or message.range_m <= 0.0
                 or not math.isfinite(message.range_std_m)
                 or message.range_std_m <= 0.0
             ):
