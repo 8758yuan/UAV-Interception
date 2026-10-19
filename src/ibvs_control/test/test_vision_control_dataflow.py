@@ -128,7 +128,7 @@ def test_flight_gains_limit_far_range_acceleration() -> None:
     config_path = (
         Path(__file__).parents[1]
         / 'config'
-        / 'paper_design_parameters.yaml'
+        / 'design_parameters.yaml'
     )
     parameters = yaml.safe_load(config_path.read_text(encoding='utf-8'))[
         'vision_interception_coordinator'
@@ -162,7 +162,7 @@ def test_trial_launches_and_records_observer() -> None:
     assert "'speed_limit_m_s'" in trial_launch
     assert "'interception_tilt_limit_deg': ParameterValue" in trial_launch
     assert "'max_horizontal_distance_m': ParameterValue" in trial_launch
-    assert "'paper_design_parameters.yaml'" in trial_launch
+    assert "'design_parameters.yaml'" in trial_launch
 
 
 def test_sitl_delay_and_dkf_period_configuration_match_paper() -> None:
@@ -172,7 +172,7 @@ def test_sitl_delay_and_dkf_period_configuration_match_paper() -> None:
         workspace_src
         / 'ibvs_control'
         / 'config'
-        / 'paper_design_parameters.yaml'
+        / 'design_parameters.yaml'
     ).read_text(encoding='utf-8')
     vision_launch = (
         workspace_src
@@ -189,7 +189,7 @@ def test_paper_design_parameters_have_one_configuration_source() -> None:
     """Paper-tuned values live only in the dedicated override file."""
     config_root = Path(__file__).parents[1] / 'config'
     design = yaml.safe_load(
-        (config_root / 'paper_design_parameters.yaml').read_text(
+        (config_root / 'design_parameters.yaml').read_text(
             encoding='utf-8'
         )
     )

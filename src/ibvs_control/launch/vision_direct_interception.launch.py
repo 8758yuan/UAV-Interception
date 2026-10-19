@@ -1,10 +1,8 @@
 """Run the hard-disabled camera-feature-only interception coordinator."""
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import PathJoinSubstitution
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -28,14 +26,11 @@ def generate_launch_description() -> LaunchDescription:
         [
             FindPackageShare('ibvs_control'),
             'config',
-            'paper_design_parameters.yaml',
+            'design_parameters.yaml',
         ]
     )
     return LaunchDescription(
         [
-            DeclareLaunchArgument(
-                'approach_profile_enabled', default_value='true'
-            ),
             Node(
                 package='ibvs_control',
                 executable='paper_state_observer',
@@ -48,13 +43,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable='vision_interception_coordinator',
                 name='vision_interception_coordinator',
                 output='screen',
-                parameters=[
-                    config, paper_design_config,
-                    {'approach_profile.enabled': ParameterValue(
-                        LaunchConfiguration('approach_profile_enabled'),
-                        value_type=bool,
-                    )},
-                ],
+                parameters=[config, paper_design_config],
             )
         ]
     )

@@ -1,6 +1,5 @@
 """ROS-message integration for observer-to-paper-controller data flow."""
 
-import math
 from types import SimpleNamespace
 
 import numpy as np
@@ -10,7 +9,6 @@ from rclpy.serialization import deserialize_message, serialize_message
 
 from interception_interfaces.msg import (
     ControlDebug,
-    ObserverBootstrap,
     ObserverState,
     VisionFeature,
 )
@@ -23,7 +21,9 @@ from ibvs_control.vision_interception_coordinator import (
 )
 
 
-def test_observer_state_and_onboard_attitude_drive_paper_controller() -> None:
+def test_observer_state_and_onboard_attitude_drive_paper_controller(
+    monkeypatch,
+) -> None:
     rclpy.init()
     node = None
     try:
@@ -43,7 +43,8 @@ def test_observer_state_and_onboard_attitude_drive_paper_controller() -> None:
         odometry = VehicleOdometry()
         odometry.q = [1.0, 0.0, 0.0, 0.0]
         node._odometry_callback(odometry)
-        node._update_control(node.get_clock().now().nanoseconds)
+        now_ns = node.get_clock().now().nanoseconds
+        node._update_control(now_ns)
 
         assert node.visual_result is not None
         assert node.inner_result is not None
@@ -55,6 +56,29 @@ def test_observer_state_and_onboard_attitude_drive_paper_controller() -> None:
             < node.inner_result.thrust_n
             <= node.paper_config.thrust_max_n
         )
+
+        baseline = node.visual_result
+        node._update_control(now_ns + 5_000_000)
+        assert node.visual_result is baseline
+        node._update_control(now_ns + 20_000_000)
+        assert node.visual_result is not baseline
+        assert node.visual_result.acceleration_d_e == pytest.approx(
+            baseline.acceleration_d_e
+        )
+
+        messages = []
+        monkeypatch.setattr(
+            node, 'debug_pub', SimpleNamespace(publish=messages.append)
+        )
+        node._publish_debug()
+        debug = deserialize_message(
+            serialize_message(messages[-1]), ControlDebug
+        )
+        assert debug.valid
+        assert debug.acceleration_d.x == pytest.approx(
+            node.visual_result.acceleration_d_e[0]
+        )
+        assert debug.thrust_n == pytest.approx(node.inner_result.thrust_n)
     finally:
         if node is not None:
             node.destroy_node()
@@ -220,72 +244,6 @@ def test_only_verified_contact_commits_the_impact_transition() -> None:
         node._update_visual_terminal(1.1)
         assert node.visual_interception_complete
         assert node.terminal_started_s == 1.1
-    finally:
-        if node is not None:
-            node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
-
-
-def test_enabled_planner_drives_control_and_debug(monkeypatch) -> None:
-    """Plan from observer data and serialize its diagnostic ROS message."""
-    rclpy.init(args=['--ros-args', '-p', 'approach_profile.enabled:=true'])
-    node = None
-    try:
-        node = VisionInterceptionCoordinator()
-        state = ObserverState()
-        state.initialized = True
-        state.valid = True
-        state.q = [1.0, 0.0, 0.0, 0.0]
-        state.p_r.x = -12.0
-        state.p_r.z = -1.0
-        state.image_xy = [0.0, -1.0 / 12.0]
-        node._observer_callback(state)
-        odometry = VehicleOdometry()
-        odometry.q = [1.0, 0.0, 0.0, 0.0]
-        node._odometry_callback(odometry)
-        now_ns = node.get_clock().now().nanoseconds
-        node._update_control(now_ns)
-        baseline = node.visual_result
-        assert node.approach_planner is not None
-        assert node.approach_planner.replan_count == 1
-        assert baseline.relative_velocity_d_e == pytest.approx(
-            -node.paper_config.k1 * np.array((-12.0, 0.0, -1.0))
-        )
-        node._update_control(now_ns + 200_000_000)
-        assert node.visual_result is not None
-        assert node.inner_result is not None
-        assert node.px4_command is not None
-        assert node.control_reason == 'ok_paper_observer_control'
-        assert node.visual_result.omega1_b == pytest.approx(baseline.omega1_b)
-        assert not np.allclose(
-            node.visual_result.acceleration_d_e, baseline.acceleration_d_e
-        )
-
-        messages = []
-        monkeypatch.setattr(
-            node, 'debug_pub', SimpleNamespace(publish=messages.append)
-        )
-        node._publish_debug()
-        debug = deserialize_message(
-            serialize_message(messages[-1]), ControlDebug
-        )
-        assert debug.approach_profile_enabled
-        assert debug.valid
-        assert debug.approach_speed_m_s == node.approach_reference.speed_m_s
-        assert debug.reference_distance_m == (
-            node.approach_reference.distance_m
-        )
-        assert debug.estimated_distance_m == pytest.approx(
-            math.hypot(12.0, 1.0)
-        )
-        assert debug.approach_replan_count == node.approach_planner.replan_count
-        assert debug.approach_weight == node.approach_planner.weight
-
-        # Reset through the original bootstrap lifecycle, not a planner mode.
-        node._reset_observer_for_interception(ObserverBootstrap())
-        assert node.approach_reference is None
-        assert node.approach_planner.segment is None
     finally:
         if node is not None:
             node.destroy_node()

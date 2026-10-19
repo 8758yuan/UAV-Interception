@@ -63,7 +63,7 @@ def generate_launch_description() -> LaunchDescription:
         package_share, 'config', 'paper_state_observer.yaml'
     )
     paper_design_config = os.path.join(
-        package_share, 'config', 'paper_design_parameters.yaml'
+        package_share, 'config', 'design_parameters.yaml'
     )
     trial_id = LaunchConfiguration('trial_id')
     results = LaunchConfiguration('results_directory')
@@ -82,10 +82,6 @@ def generate_launch_description() -> LaunchDescription:
             config,
             paper_design_config,
             {
-                'approach_profile.enabled': ParameterValue(
-                    LaunchConfiguration('approach_profile_enabled'),
-                    value_type=bool,
-                ),
                 'enable_flight_commands': ParameterValue(
                     enabled,
                     value_type=bool,
@@ -164,10 +160,6 @@ def generate_launch_description() -> LaunchDescription:
                 'enable_flight_commands', default_value='false'
             ),
             DeclareLaunchArgument('confirmation_token', default_value=''),
-            DeclareLaunchArgument(
-                'approach_profile_enabled', default_value='true',
-                description='启用V3连续接近规划；false恢复原论文速度参考',
-            ),
             DeclareLaunchArgument('record_bag', default_value='true'),
             DeclareLaunchArgument(
                 'minimum_bag_free_space_gb',

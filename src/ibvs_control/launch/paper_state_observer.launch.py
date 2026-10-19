@@ -19,7 +19,7 @@ def generate_launch_description() -> LaunchDescription:
         [
             FindPackageShare('ibvs_control'),
             'config',
-            'paper_design_parameters.yaml',
+            'design_parameters.yaml',
         ]
     )
     return LaunchDescription(

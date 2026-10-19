@@ -10,7 +10,7 @@ vision_interception_coordinator:
 
     # 位置误差项 -position_gain*p_r 的强度。原论文取1.0；本次静止目标
     # 试验降低远距离加速，避免近距离才要求与前视相机视线冲突的大倾角制动。
-    position_gain: 1.0
+    position_gain: 0.8
 
     # 论文式(12)的Barrier边界k_b，本项目用角度配置：
     # k_b=1-cos(safe_los_angle_deg)。数值减小可让控制器更早抑制目标偏移。

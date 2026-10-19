@@ -5,10 +5,6 @@ import math
 
 import numpy as np
 
-from ibvs_control.approach_profile import (
-    ApproachPlanner,
-    ApproachProfileConfig,
-)
 from ibvs_control.frames import (
     quaternion_wxyz_to_rotation,
     rotation_to_quaternion_wxyz,
@@ -59,7 +55,6 @@ def simulate_observer_closed_loop(
     observer_noise: ObserverNoise = ObserverNoise(),
     observer_config: ObserverConfig = ObserverConfig(),
     target_velocity_e: tuple = (0.0, 0.0, 0.0),
-    approach_profile: ApproachProfileConfig = None,
 ) -> ObserverClosedLoopResult:
     """
     Run a constant-velocity-target plant using observer estimates for control.
@@ -70,10 +65,6 @@ def simulate_observer_closed_loop(
     """
     controller.validate()
     simulation.validate()
-    planner = (
-        ApproachPlanner(approach_profile, controller.k1)
-        if approach_profile is not None else None
-    )
     if not math.isfinite(camera_hz) or camera_hz <= 0.0:
         raise ValueError('camera_hz must be finite and positive')
     target_velocity = np.asarray(target_velocity_e, dtype=float)
@@ -140,15 +131,6 @@ def simulate_observer_closed_loop(
             )
             try:
                 designed_los = attitude_estimate @ designed_los_b
-                reference = (
-                    planner.update(
-                        time_s, estimate.p_r_e, estimate.v_r_e,
-                        1.0 - float(
-                            (designed_los / np.linalg.norm(designed_los))
-                            @ (los_estimate / np.linalg.norm(los_estimate))
-                        ),
-                    ) if planner is not None else None
-                )
                 outer = compute_outer_loop(
                     estimate.p_r_e,
                     estimate.v_r_e,
@@ -156,13 +138,6 @@ def simulate_observer_closed_loop(
                     designed_los,
                     attitude_estimate,
                     controller,
-                    approach_speed_m_s=(
-                        reference.speed_m_s if reference is not None else None
-                    ),
-                    approach_acceleration_m_s2=(
-                        reference.acceleration_m_s2
-                        if reference is not None else None
-                    ),
                 )
             except ValueError as error:
                 reason = f'controller_error:{error}'
