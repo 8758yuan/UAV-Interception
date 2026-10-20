@@ -52,7 +52,7 @@ class TakeoffConfig:
     hold_duration_s: float = 10.0
     land_timeout_s: float = 30.0
     telemetry_timeout_s: float = 1.0
-    max_horizontal_distance_m: float = 3.0
+    max_horizontal_distance_m: float = 3.0  # Zero disables the horizontal fence.
     max_relative_altitude_m: float = 4.0
     min_hold_altitude_m: float = 0.5
     max_tilt_rad: float = math.radians(35.0)
@@ -75,7 +75,6 @@ class TakeoffConfig:
             'takeoff_timeout_s': self.takeoff_timeout_s,
             'land_timeout_s': self.land_timeout_s,
             'telemetry_timeout_s': self.telemetry_timeout_s,
-            'max_horizontal_distance_m': self.max_horizontal_distance_m,
             'max_relative_altitude_m': self.max_relative_altitude_m,
             'min_hold_altitude_m': self.min_hold_altitude_m,
             'max_tilt_rad': self.max_tilt_rad,
@@ -84,6 +83,13 @@ class TakeoffConfig:
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f'{name} must be finite and greater than zero')
 
+        if (
+            not math.isfinite(self.max_horizontal_distance_m)
+            or self.max_horizontal_distance_m < 0.0
+        ):
+            raise ValueError(
+                'max_horizontal_distance_m must be finite and nonnegative'
+            )
         if not math.isfinite(self.hold_duration_s):
             raise ValueError('hold_duration_s must be finite')
         if self.auto_land and self.hold_duration_s < 0.0:
@@ -388,7 +394,10 @@ class TakeoffStateMachine:
             self.x - self.home_x,
             self.y - self.home_y,
         )
-        if horizontal_distance > self.config.max_horizontal_distance_m:
+        if (
+            self.config.max_horizontal_distance_m > 0.0
+            and horizontal_distance > self.config.max_horizontal_distance_m
+        ):
             self.abort('horizontal_geofence', now_s)
             return
         if self.relative_altitude_m > self.config.max_relative_altitude_m:

@@ -113,7 +113,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             k1=self._float_parameter('paper_k1'),
             k2=self._float_parameter('paper_k2'),
             v_c=self._float_parameter('v_c'),
-            position_gain=self._float_parameter('position_gain'),
+            position_gain=tuple(self.get_parameter('position_gain').value),
             k_b=self.k_b,
             mass_kg=self._float_parameter('mass_kg'),
             thrust_max_n=self._float_parameter('thrust_max_n'),
@@ -248,20 +248,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.designed_image_xy = (
             designed_los_c[:2] / designed_los_c[2]
         )
-        minimum_barrier_margin = self._float_parameter(
-            'minimum_barrier_margin'
-        )
-        start_reserve = self._float_parameter(
-            'visual_start_barrier_margin_reserve'
-        )
-        release_reserve = self._float_parameter(
-            'visual_release_barrier_margin_reserve'
-        )
-        if not 0.0 < release_reserve < start_reserve:
-            raise ValueError(
-                'visual barrier reserves must satisfy '
-                '0 < release < start'
-            )
         self.acquisition = VisualAcquisition(
             VisualAcquisitionConfig(
                 search_yaw_rate_rad_s=self._float_parameter(
@@ -273,23 +259,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 search_vertical_period_s=self._float_parameter(
                     'visual_search_vertical_period_s'
                 ),
-                align_yaw_gain_rad_s=self._float_parameter(
-                    'visual_align_yaw_gain_rad_s'
-                ),
-                align_vertical_gain_m_s=self._float_parameter(
-                    'visual_align_vertical_gain_m_s'
-                ),
-                k_b=self.k_b,
                 desired_image_xy=tuple(self.designed_image_xy),
-                start_barrier_margin=(
-                    minimum_barrier_margin + start_reserve
-                ),
-                release_barrier_margin=(
-                    minimum_barrier_margin + release_reserve
-                ),
-                settle_time_s=self._float_parameter(
-                    'visual_align_settle_time_s'
-                ),
                 target_loss_timeout_s=self._float_parameter(
                     'visual_search_loss_timeout_s'
                 ),
@@ -503,7 +473,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('paper_k1', 0.05)
         self.declare_parameter('paper_k2', 3.0)
         self.declare_parameter('v_c', 0.5)
-        self.declare_parameter('position_gain', 1.0)
+        self.declare_parameter('position_gain', [1.0, 1.0, 1.0])
         self.declare_parameter('designed_los_pitch_deg', 0.0)
         self.declare_parameter(
             'camera_to_body_rotation',
@@ -542,11 +512,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('visual_search_yaw_rate_rad_s', 0.35)
         self.declare_parameter('visual_search_vertical_amplitude_m', 3.0)
         self.declare_parameter('visual_search_vertical_period_s', 20.0)
-        self.declare_parameter('visual_align_yaw_gain_rad_s', 1.2)
-        self.declare_parameter('visual_align_vertical_gain_m_s', 1.0)
-        self.declare_parameter('visual_start_barrier_margin_reserve', 0.02)
-        self.declare_parameter('visual_release_barrier_margin_reserve', 0.005)
-        self.declare_parameter('visual_align_settle_time_s', 0.5)
         self.declare_parameter('visual_search_loss_timeout_s', 0.3)
         self.declare_parameter('omega_limit_rad_s', 0.20)
         self.declare_parameter('outer_loop_hz', 50.0)
@@ -558,7 +523,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('speed_limit_m_s', 21.0)
         # 拦截阶段最大倾角，单位deg；超过后由安全门中止任务。
         self.declare_parameter('interception_tilt_limit_deg', 55.0)
-        self.declare_parameter('minimum_barrier_margin', 0.02)
         self.declare_parameter('post_hit_coast_duration_s', 0.20)
         self.declare_parameter('stabilize_duration_s', 3.0)
         self.declare_parameter('stabilize_tilt_tolerance_deg', 8.0)
@@ -1127,7 +1091,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.offboard_pub.publish(message)
 
     def _update_visual_acquisition(self, now_s: float, now_ns: int) -> None:
-        """Search for and safely acquire a fresh target while hovering."""
+        """Start range bootstrap as soon as a fresh target is detected."""
         heading = self.vehicle_heading_ned_rad
         if heading is None:
             return
@@ -1201,7 +1165,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         )
 
     def _publish_visual_acquisition_setpoint(self) -> None:
-        """Hold position while search/alignment changes only yaw and height."""
+        """Publish search or hold setpoints with range-probe motion."""
         command = self.acquisition_command
         home_x = self.state_machine.home_x
         home_y = self.state_machine.home_y
@@ -1219,10 +1183,8 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.offboard_pub.publish(mode)
         setpoint = TrajectorySetpoint()
         setpoint.timestamp = self._timestamp_us()
-        # Acquisition may request a large vertical correction for a target
-        # above or below the initial takeoff plane.  Clamp the actual PX4
-        # setpoint to the same altitude envelope used by the flight state
-        # machine, so a bad or lost image cannot command outside the fence.
+        # Search and range probing share the flight state machine's
+        # existing altitude envelope.
         relative_altitude = _clip(
             self.state_machine.config.target_altitude_m
             - command.vertical_offset_m
@@ -1243,7 +1205,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.commanded_thrust_normalized = math.nan
 
     def _range_probe_offset_m(self) -> float:
-        """Provide gentle vertical parallax only while visual lock is safe."""
+        """Provide vertical parallax while a target is visible for bootstrap."""
         if self.range_probe_started_s is None or self.bootstrap_sent:
             return 0.0
         elapsed_s = max(

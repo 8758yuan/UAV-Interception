@@ -11,9 +11,9 @@ import numpy as np
 class OuterLoopConfig:
     """Tuning and vehicle parameters used by the 50 Hz outer loop.
 
-    position_gain scales the position Lyapunov term.  The paper uses 1.0;
-    any positive value retains cancellation with -position_gain * p_r in
-    the relative-velocity feedback equation.
+    position_gain contains the positive ENU x/y/z position gains. The paper
+    uses (1.0, 1.0, 1.0); the diagonal position weighting retains cancellation
+    with the componentwise position feedback in the velocity error equation.
     v_c is the positive constant closing-speed component in m/s.
     """
 
@@ -23,19 +23,21 @@ class OuterLoopConfig:
     mass_kg: float
     thrust_max_n: float
     gravity_m_s2: float = 9.80665
-    position_gain: float = 1.0
+    position_gain: tuple[float, float, float] = (1.0, 1.0, 1.0)
     v_c: float = 0.5
 
     def validate(self) -> None:
         """Reject nonphysical gains and limits."""
         positive = (
-            self.k1, self.k2, self.k_b, self.mass_kg, self.position_gain,
-            self.v_c,
+            self.k1, self.k2, self.k_b, self.mass_kg, self.v_c,
         )
         if not all(math.isfinite(value) and value > 0.0 for value in positive):
             raise ValueError(
-                'k1, k2, k_b, mass_kg, position_gain, and v_c must be positive'
+                'k1, k2, k_b, mass_kg, and v_c must be positive'
             )
+        position_gain = _vector3(self.position_gain, 'position_gain')
+        if np.any(position_gain <= 0.0):
+            raise ValueError('position_gain components must be positive')
         if not 0.0 < self.k_b < 2.0:
             raise ValueError('k_b must be within (0, 2)')
         if not math.isfinite(self.thrust_max_n) or self.thrust_max_n <= 0.0:
@@ -138,7 +140,7 @@ def compute_outer_loop(
     acceleration_d = (
         velocity_d_dot
         - config.k2 * z2
-        - config.position_gain * p_r
+        - np.asarray(config.position_gain) * p_r
         + barrier_gain * config.mass_kg / distance_m * projection @ n_td
         + a_target
     )

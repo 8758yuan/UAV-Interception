@@ -178,8 +178,8 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 'max_horizontal_distance_m',
-                default_value='20.0',
-                description='相对起飞点的最大水平距离，单位m',
+                default_value='0.0',
+                description='相对起飞点的最大水平距离，单位m，0表示关闭',
             ),
             OpaqueFunction(function=_prepare_directories),
             shutdown,

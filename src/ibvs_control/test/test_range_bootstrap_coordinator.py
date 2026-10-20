@@ -13,7 +13,6 @@ from rclpy.time import Time
 from ibvs_control.interception_state_machine import InterceptionPhase
 from ibvs_control.takeoff_state_machine import FlightPhase
 from ibvs_control.visual_acquisition import (
-    VisualAcquisitionCommand,
     VisualAcquisitionPhase,
 )
 from ibvs_control.vision_interception_coordinator import (
@@ -162,13 +161,7 @@ def test_ready_gate_requires_bootstrap_sent(coordinator, monkeypatch) -> None:
     node, clock = coordinator
     node.gate.phase = InterceptionPhase.WAIT_HOVER
     node.last_gate_phase = InterceptionPhase.WAIT_HOVER
-    node.acquisition_command = VisualAcquisitionCommand(
-        phase=VisualAcquisitionPhase.READY,
-        yaw_setpoint_rad=0.0,
-        vertical_offset_m=0.0,
-        image_error=0.0,
-        ready=True,
-    )
+    node.vehicle_heading_ned_rad = 0.0
     node.feature = _feature(clock, 1.5)
     node.feature_received_ns = clock.nanoseconds
     node.observer_received_ns = clock.nanoseconds
@@ -181,13 +174,14 @@ def test_ready_gate_requires_bootstrap_sent(coordinator, monkeypatch) -> None:
     node.px4_command = object()
     node.visual_result = SimpleNamespace(z1=0.0)
     monkeypatch.setattr(node.state_machine, 'step', lambda now_s: ())
-    monkeypatch.setattr(node, '_update_visual_acquisition', lambda *args: None)
     monkeypatch.setattr(node, '_publish_visual_acquisition_setpoint',
                         lambda: None)
     monkeypatch.setattr(node, '_publish_rate_mode', lambda: None)
     monkeypatch.setattr(node, '_publish_hover_rate_setpoint', lambda: None)
 
     node._run_enabled_step(clock.nanoseconds * 1e-9, clock.nanoseconds)
+    assert node.acquisition_command.phase == VisualAcquisitionPhase.READY
+    assert node.acquisition_command.ready
     assert node.gate.phase == InterceptionPhase.WAIT_HOVER
 
     node.bootstrap_sent = True
@@ -200,15 +194,13 @@ def test_range_probe_is_bounded_and_stops_when_lock_is_revoked(
 ) -> None:
     node, clock = coordinator
     node.vehicle_heading_ned_rad = 0.0
-    for offset_ns in (0, 100_000_000, 700_000_000):
-        clock.nanoseconds = BASE_NS + offset_ns
-        node._feature_callback(_feature(clock, 1.5))
-        node._update_visual_acquisition(
-            clock.nanoseconds * 1e-9, clock.nanoseconds
-        )
+    node._feature_callback(_feature(clock, 1.5))
+    node._update_visual_acquisition(
+        clock.nanoseconds * 1e-9, clock.nanoseconds
+    )
     assert node.acquisition_command.ready
     assert node.range_estimate is None
-    assert node.range_probe_started_s is not None
+    assert node.range_probe_started_s == clock.nanoseconds * 1e-9
 
     start_ns = clock.nanoseconds
     period_ns = int(node.range_probe_period_s * 1e9)

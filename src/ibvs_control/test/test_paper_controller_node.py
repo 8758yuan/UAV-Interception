@@ -172,7 +172,7 @@ def test_default_outer_loop_does_not_clip_paper_acceleration() -> None:
         expected_x = (
             -node.paper_config.k1 * 2.2
             - node.paper_config.k2 * z2_x
-            - node.paper_config.position_gain * -7.0
+            - node.paper_config.position_gain[0] * -7.0
         )
         assert result.acceleration_d_e == pytest.approx(
             (expected_x, 0.0, 0.0)
@@ -191,6 +191,19 @@ def test_ros_closing_speed_parameter_reaches_outer_loop() -> None:
     try:
         node = VisionInterceptionCoordinator()
         assert node.paper_config.v_c == pytest.approx(1.75)
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def test_ros_position_gain_vector_reaches_outer_loop() -> None:
+    rclpy.init(args=['--ros-args', '-p', 'position_gain:=[0.2,0.3,0.8]'])
+    node = None
+    try:
+        node = VisionInterceptionCoordinator()
+        assert node.paper_config.position_gain == pytest.approx((0.2, 0.3, 0.8))
     finally:
         if node is not None:
             node.destroy_node()

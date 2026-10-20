@@ -32,7 +32,7 @@ vision_interception_coordinator:
       # PX4命令确认反馈。
       vehicle_command_ack: /fmu/out/vehicle_command_ack_v1
 
-    # 原始视觉特征输入，仅用于目标搜索、粗对准和诊断。
+    # 原始视觉特征输入，用于目标搜索、估距初始化和诊断。
     feature_topic: /interception/vision/raw_feature
     # 延迟状态观测器输出；主动拦截控制只使用该状态。
     observer_topic: /interception/observer/state
@@ -84,8 +84,9 @@ vision_interception_coordinator:
     altitude_tolerance_m: 0.15
     # 起飞垂直速度容限，单位m/s。
     vertical_speed_tolerance_m_s: 0.30
-    # 起飞/搜索安全围栏：水平距离和相对高度(m)。
-    max_horizontal_distance_m: 15.0
+    # 相对起飞点的水平距离围栏(m)，0表示关闭。
+    max_horizontal_distance_m: 0.0
+    # 相对高度上限(m)。
     max_relative_altitude_m: 50.0
     min_hold_altitude_m: 0.5
     # 整机最终倾角保护(deg)，应高于interception_tilt_limit_deg。
@@ -123,7 +124,7 @@ vision_interception_coordinator:
     range_min_observable_duration_s: 2.0
     range_position_std_floor_m: 1.0
     range_velocity_std_floor_m_s: 5.0
-    # 若起飞阶段未形成足够视差，在安全视觉锁定下缓慢升降估距。
+    # 若起飞阶段未形成足够视差，检测到目标后缓慢升降估距。
     range_probe_vertical_amplitude_m: 1.5
     range_probe_vertical_period_s: 8.0
     # Gazebo整机质量(kg)，必须与模型一致。
@@ -143,16 +144,6 @@ vision_interception_coordinator:
     # 垂直搜索振幅(m)和周期(s)；振幅必须位于高度围栏内。
     visual_search_vertical_amplitude_m: 3.0
     visual_search_vertical_period_s: 20.0
-    # 目标在安全视线范围之外时使用的偏航/高度粗对准增益。
-    visual_align_yaw_gain_rad_s: 1.2
-    visual_align_vertical_gain_m_s: 3.0
-    # 启动/解除视觉锁定所需的额外视线屏障裕度（叠加minimum_barrier_margin）。
-    # 启动余量须大于解除余量；当前30°屏障下分别约对应25°/27°偏角。
-    # 目标已在安全范围内时允许直接启动，无需先对准图像中心。
-    visual_start_barrier_margin_reserve: 0.02
-    visual_release_barrier_margin_reserve: 0.005
-    # 目标连续处于启动安全范围的时间(s)。
-    visual_align_settle_time_s: 0.5
     # 目标连续丢失多久后重启搜索(s)。
     visual_search_loss_timeout_s: 0.3
 
@@ -166,8 +157,6 @@ vision_interception_coordinator:
     speed_limit_m_s: 21.0
     # 拦截阶段最大倾角，超过后触发安全中止，单位deg。
     interception_tilt_limit_deg: 55.0
-    # 仅用于视觉锁定的启动/解除余量；主动拦截只在越过控制律Barrier边界时中止。
-    minimum_barrier_margin: 0.02
     # 碰撞后保持原速度时间(s)，用于越过目标；过长会增加飞行距离。
     post_hit_coast_duration_s: 0.20
     # 平滑减速时间(s)；增大减速更柔和，但恢复更慢。
