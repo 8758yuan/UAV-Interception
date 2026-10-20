@@ -127,10 +127,10 @@ def generate_launch_description() -> LaunchDescription:
                 'model_path',
                 default_value=os.path.join(
                     get_package_share_directory('ibvs_perception'),
-                    'models', 'balloon_yolo11n.pt',
+                    'models', 'balloon_yolo26n.pt',
                 ),
                 description=(
-                    'Balloon weights; custom detection weights are supported'
+                    'YOLO26n balloon weights; custom weights are supported'
                 ),
             ),
             DeclareLaunchArgument(

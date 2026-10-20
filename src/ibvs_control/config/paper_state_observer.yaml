@@ -24,5 +24,7 @@ paper_state_observer:
     camera_to_body_rotation: [0.0, 0.0, 1.0,
                               -1.0, 0.0, 0.0,
                               0.0, -1.0, 0.0]
+    # 与控制器使用同一实际安装位置；状态p_r/v_r仍定义在机体原点。
+    camera_position_b_m: [0.14, 0.0, 0.0]
     # 单次IMU传播最大步长(s)；较大时间间隔会被拆分计算。
     maximum_dt_s: 0.05

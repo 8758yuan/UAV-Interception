@@ -15,6 +15,7 @@ def test_node_waits_for_interception_reset_then_updates_online() -> None:
     node = None
     try:
         node = PaperStateObserverNode()
+        assert node.observer.config.camera_position_b_m == (0.14, 0.0, 0.0)
         node.require_range_bootstrap = False
         attitude = VehicleAttitude()
         attitude.q = [1.0, 0.0, 0.0, 0.0]

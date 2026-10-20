@@ -19,7 +19,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'models'), glob('models/*.pt')),
     ],
-    install_requires=['numpy<2', 'setuptools', 'ultralytics>=8.3,<9'],
+    install_requires=['numpy<2', 'setuptools', 'ultralytics>=8.4,<9'],
     zip_safe=True,
     maintainer='yuan',
     maintainer_email='yuan@example.com',

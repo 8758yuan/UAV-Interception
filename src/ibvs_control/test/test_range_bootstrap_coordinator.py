@@ -69,9 +69,9 @@ def _feature(clock: _Clock, height_m: float) -> VisionFeature:
     message.valid = True
     # With PX4's identity FRD-to-NED attitude, camera +Z looks north and
     # camera +Y looks down. The static target is 10 m ahead of the camera
-    # and at ENU height 1.5 m. The camera is 0.2 m above the body origin.
+    # and at ENU height 1.5 m. The camera and body origin share a height.
     message.x_norm = 0.0
-    message.y_norm = (height_m + 0.2 - 1.5) / 10.0
+    message.y_norm = (height_m - 1.5) / 10.0
     return message
 
 
@@ -114,12 +114,12 @@ def test_multiview_bootstrap_needs_parallax_and_estimates_ten_meters(
         _send_sample(node, clock, index, 3.0)
     bootstrap = node._range_bootstrap_message(clock.nanoseconds)
     assert bootstrap is not None
-    # The camera is 0.12 m ahead of the vehicle origin, so the target is
-    # 10.12 m north of the vehicle; its vertical offset remains 1.5 m.
-    expected_range_m = math.hypot(10.12, 1.5)
+    # The camera is 0.14 m ahead of the vehicle origin, so the target is
+    # 10.14 m north of the vehicle; its vertical offset remains 1.5 m.
+    expected_range_m = math.hypot(10.14, 1.5)
     assert bootstrap.range_m == pytest.approx(expected_range_m, abs=0.1)
     assert (bootstrap.p_r.x, bootstrap.p_r.y, bootstrap.p_r.z) == (
-        pytest.approx((0.0, -10.12, 1.5), abs=0.1)
+        pytest.approx((0.0, -10.14, 1.5), abs=0.1)
     )
     assert bootstrap.sample_count >= node.range_estimator.config.min_samples
     covariance = np.asarray(bootstrap.relative_covariance).reshape((6, 6))

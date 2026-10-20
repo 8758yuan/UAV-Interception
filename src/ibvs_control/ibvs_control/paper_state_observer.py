@@ -96,6 +96,7 @@ class ObserverConfig:
     )
     maximum_dt_s: float = 0.05
     dkf_delay_steps: int = 0
+    camera_position_b_m: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     def validate(self) -> None:
         """Validate frames and finite numerical limits."""
@@ -103,6 +104,7 @@ class ObserverConfig:
         rotation = np.asarray(self.camera_to_body_rotation, dtype=float)
         if gravity.shape != (3,) or not np.all(np.isfinite(gravity)):
             raise ValueError('gravity_e must be a finite three-vector')
+        _finite_vector(self.camera_position_b_m, 3, 'camera_position_b_m')
         if rotation.shape != (9,) or not np.all(np.isfinite(rotation)):
             raise ValueError('camera_to_body_rotation must contain 9 values')
         rotation = rotation.reshape((3, 3))
@@ -178,6 +180,7 @@ class PaperStateObserver:
             config.camera_to_body_rotation,
             dtype=float,
         ).reshape((3, 3))
+        self._camera_position_b = np.asarray(config.camera_position_b_m)
         self._Q = np.diag(
             [noise.gyro_noise_std_rad_s ** 2] * 3
             + [noise.accel_noise_std_m_s2 ** 2] * 3
@@ -290,7 +293,9 @@ class PaperStateObserver:
         )
         r_b_to_e = _quaternion_to_rotation(q)
         # p_r = p_interceptor - p_target, hence the leading minus sign.
-        p_r_e = -(r_b_to_e @ self._r_c_to_b @ target_c)
+        p_r_e = -r_b_to_e @ (
+            self._camera_position_b + self._r_c_to_b @ target_c
+        )
         state = InterceptionState18(
             q=tuple(q),
             p_r_e=tuple(float(value) for value in p_r_e),
@@ -559,7 +564,10 @@ class PaperStateObserver:
         specific_force_b = accel - b_acc
         r_b_to_e = _quaternion_to_rotation(q)
         earth_to_camera = self._r_c_to_b.T @ r_b_to_e.T
-        target_c = earth_to_camera @ (-p_r)
+        target_c = (
+            earth_to_camera @ (-p_r)
+            - self._r_c_to_b.T @ self._camera_position_b
+        )
         depth_m = float(target_c[2])
         if not math.isfinite(depth_m) or depth_m <= 0.0:
             raise ValueError(
@@ -572,7 +580,10 @@ class PaperStateObserver:
         v_r_new = v_r + acceleration_e * dt_s
         p_r_new = p_r + 0.5 * (v_r + v_r_new) * dt_s
 
-        velocity_c = self._r_c_to_b.T @ r_b_to_e.T @ v_r
+        velocity_c = self._r_c_to_b.T @ (
+            r_b_to_e.T @ v_r
+            + np.cross(omega_b, self._camera_position_b)
+        )
         omega_c = self._r_c_to_b.T @ omega_b
         translation_jacobian = _translation_image_jacobian(image, depth_m)
         rotation_jacobian = _rotation_image_jacobian(image)
@@ -611,11 +622,13 @@ class PaperStateObserver:
                 @ self._r_c_to_b.T
                 @ derivative.T
                 @ v_r
+                + (translation_jacobian @ velocity_c) / depth_m
+                * (self._r_c_to_b.T @ derivative.T @ p_r)[2]
                 for derivative in rotation_derivatives
             ]
         ) * dt_s
         F[IMAGE_SLICE, Q_SLICE] = f_image_q
-        # Depth z = -earth_to_camera[2] @ p_r. Since the translational
+        # Depth includes the fixed camera offset. Since the translational
         # image rate is proportional to 1/z, position uncertainty changes
         # the predicted image whenever relative translation is present.
         F[IMAGE_SLICE, P_R_SLICE] = (
@@ -637,8 +650,13 @@ class PaperStateObserver:
         # Equation (55) follows from the discretized equation (51); dt is
         # required dimensionally even though it is omitted in the typeset (55).
         f_image_b_gyr = (
-            -rotation_jacobian @ self._r_c_to_b.T * dt_s
-        )
+            translation_jacobian @ self._r_c_to_b.T
+            @ np.column_stack([
+                np.cross(self._camera_position_b, axis)
+                for axis in np.eye(3)
+            ])
+            - rotation_jacobian @ self._r_c_to_b.T
+        ) * dt_s
         F[IMAGE_SLICE, GYRO_BIAS_SLICE] = f_image_b_gyr
         G[IMAGE_SLICE, 0:3] = f_image_b_gyr
         return predicted, F, G

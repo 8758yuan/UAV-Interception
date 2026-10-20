@@ -315,3 +315,14 @@ def test_visual_search_configuration_is_enabled_for_flight() -> None:
     assert 'visual_search_vertical_amplitude_m: 3.0' in config
     assert 'visual_search_vertical_period_s: 20.0' in config
     assert 'max_relative_altitude_m: 50.0' in config
+
+
+def test_camera_extrinsics_match_between_observer_and_controller() -> None:
+    config_root = Path(__file__).parents[1] / 'config'
+    parameters = []
+    for name in ('vision_direct_interception.yaml', 'paper_state_observer.yaml'):
+        config = yaml.safe_load((config_root / name).read_text(encoding='utf-8'))
+        parameters.append(next(iter(config.values()))['ros__parameters'])
+    for key in ('camera_to_body_rotation', 'camera_position_b_m'):
+        assert parameters[0][key] == parameters[1][key]
+    assert parameters[0]['camera_position_b_m'] == [0.14, 0.0, 0.0]

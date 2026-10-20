@@ -121,7 +121,8 @@ def compute_outer_loop(
     distance_m = float(np.linalg.norm(p_r))
     if distance_m <= 1e-6:
         raise ValueError('relative distance is too small for the controller')
-    z1 = 1.0 - float(n_td @ n_t)
+    # Unit-vector roundoff must not put an aligned LOS outside its domain.
+    z1 = 1.0 - float(np.clip(n_td @ n_t, -1.0, 1.0))
     denominator = config.k_b**2 - z1**2
     if z1 < 0.0 or denominator <= 1e-9:
         raise ValueError('LOS error is outside the barrier domain')

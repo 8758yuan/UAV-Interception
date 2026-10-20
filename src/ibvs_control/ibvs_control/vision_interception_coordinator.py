@@ -483,7 +483,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 0.0, -1.0, 0.0,
             ],
         )
-        self.declare_parameter('camera_position_b_m', [0.12, 0.0, 0.2])
+        self.declare_parameter('camera_position_b_m', [0.14, 0.0, 0.0])
         self.declare_parameter('range_target_model', 'static')
         self.declare_parameter('range_image_noise_std', 0.015)
         self.declare_parameter('range_min_samples', 20)

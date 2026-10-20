@@ -99,7 +99,7 @@ vision_interception_coordinator:
                               -1.0, 0.0, 0.0,
                               0.0, -1.0, 0.0]
     # 相机光心相对FLU机体系原点的位置(m)。
-    camera_position_b_m: [0.12, 0.0, 0.2]
+    camera_position_b_m: [0.14, 0.0, 0.0]
     # 起飞/搜索期间以图像拍摄时刻匹配本机位姿，持续估计目标距离。
     # 当前静止目标试验选static；目标在估距期间移动时改为constant_velocity。
     range_target_model: static

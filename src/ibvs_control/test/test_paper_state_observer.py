@@ -21,6 +21,7 @@ from ibvs_control.paper_state_observer import (
     _quaternion_to_rotation,
     _rotation_derivatives,
 )
+from ibvs_control.so3_controller import rodrigues
 
 
 GRAVITY = 9.80665
@@ -278,9 +279,12 @@ def test_current_image_update_reduces_image_uncertainty() -> None:
     )
 
 
-def test_delayed_update_replays_imu_substeps() -> None:
+@pytest.mark.parametrize('camera_offset', ((0.0, 0.0, 0.0), (0.12, 0.0, 0.2)))
+def test_delayed_update_replays_imu_substeps(camera_offset) -> None:
     """D counts DKF periods, independent of IMU substeps in each period."""
-    config = ObserverConfig(dkf_delay_steps=2)
+    config = ObserverConfig(
+        dkf_delay_steps=2, camera_position_b_m=camera_offset
+    )
     delayed = PaperStateObserver(config=config)
     reference = PaperStateObserver(config=config)
     for observer in (delayed, reference):
@@ -558,3 +562,73 @@ def test_reset_discards_state_and_counters() -> None:
 def test_dkf_delay_configuration_requires_integer_period_counts() -> None:
     with pytest.raises(ValueError, match='dkf_delay_steps'):
         ObserverConfig(dkf_delay_steps=-1).validate()
+
+
+@pytest.mark.parametrize('depth', (0.15, 0.5, 12.0))
+def test_offset_camera_initialization_and_image_motion_match_projection(depth):
+    """Near-field prediction follows the actual moving optical centre."""
+    offset = np.array((0.12, 0.0, 0.2))
+    observer = PaperStateObserver(
+        ObserverConfig(camera_position_b_m=tuple(offset))
+    )
+    initial = observer.initialize_from_image(
+        (0.98, 0.02, 0.1, -0.02), (0.13, -0.07), depth,
+        initial_v_r_e=(0.8, -0.5, 0.2),
+    ).state
+    R = _quaternion_to_rotation(np.asarray(initial.q))
+    C = observer._r_c_to_b
+    p = np.asarray(initial.p_r_e)
+    velocity = np.asarray(initial.v_r_e)
+    omega = np.array((0.3, -0.2, 0.1))
+
+    def project(time_s):
+        rotation = R @ rodrigues(omega / np.linalg.norm(omega),
+                                 np.linalg.norm(omega) * time_s)
+        point = C.T @ (-rotation.T @ (p + velocity * time_s) - offset)
+        return point[:2] / point[2]
+
+    assert project(0.0) == pytest.approx(initial.image_xy)
+    assert (C.T @ (-R.T @ p - offset))[2] == pytest.approx(depth)
+    dt_s = 0.005
+    predicted = observer.predict(omega, (0.0, 0.0, GRAVITY), dt_s)
+    image_rate = (
+        np.asarray(predicted.state.image_xy) - initial.image_xy
+    ) / dt_s
+    epsilon = 1e-7
+    assert image_rate == pytest.approx(
+        (project(epsilon) - project(-epsilon)) / (2.0 * epsilon), abs=1e-7
+    )
+
+
+@pytest.mark.parametrize('offset', ((0.0, 0.0, 0.0), (0.12, -0.03, 0.2)))
+def test_camera_image_jacobians_include_depth_and_lever_arm(offset):
+    observer = PaperStateObserver(ObserverConfig(camera_position_b_m=offset))
+    observer.initialize_from_image(
+        (0.98, 0.02, 0.1, -0.02), (0.13, -0.07), 0.5,
+        initial_v_r_e=(0.8, -0.5, 0.2),
+    )
+    state = observer.snapshot().state.as_vector()
+    gyro = np.array((0.3, -0.2, 0.1))
+    accel = np.array((0.0, 0.0, GRAVITY))
+    _, F, G = observer._appendix_prediction(state, gyro, accel, 0.005)
+    epsilon = 1e-7
+    for column in range(STATE_DIM):
+        delta = np.zeros(STATE_DIM)
+        delta[column] = epsilon
+        plus, _, _ = observer._appendix_prediction(
+            state + delta, gyro, accel, 0.005
+        )
+        minus, _, _ = observer._appendix_prediction(
+            state - delta, gyro, accel, 0.005
+        )
+        assert F[IMAGE_SLICE, column] == pytest.approx(
+            (plus[IMAGE_SLICE] - minus[IMAGE_SLICE]) / (2.0 * epsilon),
+            abs=1e-9,
+        )
+    assert G[IMAGE_SLICE, :3] == pytest.approx(F[IMAGE_SLICE, GYRO_BIAS_SLICE])
+
+
+@pytest.mark.parametrize('offset', ((0.0, 0.0), (0.12, math.nan, 0.2)))
+def test_camera_offset_requires_finite_three_vector(offset):
+    with pytest.raises(ValueError, match='camera_position_b_m'):
+        PaperStateObserver(ObserverConfig(camera_position_b_m=offset))

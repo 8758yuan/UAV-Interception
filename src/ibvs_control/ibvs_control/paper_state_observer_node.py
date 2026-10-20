@@ -50,6 +50,9 @@ class PaperStateObserverNode(Node):
             camera_to_body_rotation=tuple(
                 self._vector_parameter('camera_to_body_rotation', 9)
             ),
+            camera_position_b_m=tuple(
+                self._vector_parameter('camera_position_b_m', 3)
+            ),
             maximum_dt_s=self._positive('maximum_dt_s'),
             dkf_delay_steps=self._nonnegative_integer(
                 'dkf_delay_steps'
@@ -184,6 +187,7 @@ class PaperStateObserverNode(Node):
             [0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
         )
         self.declare_parameter('maximum_dt_s', 0.05)
+        self.declare_parameter('camera_position_b_m', [0.14, 0.0, 0.0])
         # The paper's practical DKF runs at 50 Hz and reports about 80 ms of
         # imaging/processing delay: D = round(0.080 * 50) = 4 DKF periods.
         # The 200 Hz IMU contributes four propagation substeps per period.

@@ -328,3 +328,48 @@ def test_only_verified_contact_commits_the_impact_transition() -> None:
             node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
+
+def test_angular_rate_changes_do_not_add_acceleration_feedback(monkeypatch):
+    """The outer loop consumes the observer's body-origin relative state."""
+    rclpy.init()
+    node = None
+    try:
+        node = VisionInterceptionCoordinator()
+        state = ObserverState()
+        state.initialized = state.valid = True
+        state.p_r.x, state.p_r.y, state.p_r.z = (-12.0, 0.3, -1.0)
+        state.v_r.x, state.v_r.y, state.v_r.z = (3.0, 0.1, 0.2)
+        state.image_xy = [0.03, -0.08]
+        node._observer_callback(state)
+        captured = []
+
+        def capture(*args, **kwargs):
+            captured.append((args, kwargs))
+            return compute_outer_loop(*args, **kwargs)
+
+        monkeypatch.setattr(
+            vision_interception_coordinator, 'compute_outer_loop', capture
+        )
+        now_ns = node.get_clock().now().nanoseconds
+        accelerations = []
+        for index, rates in enumerate(((0.0, 0.0, 0.0), (1.2, -0.8, 0.6))):
+            odometry = VehicleOdometry()
+            odometry.timestamp_sample = 1_000_000 + index * 20_000
+            odometry.q = [1.0, 0.0, 0.0, 0.0]
+            odometry.angular_velocity = list(rates)
+            node._odometry_callback(odometry)
+            node._update_control(now_ns + index * 20_000_000)
+            args, kwargs = captured[-1]
+            assert args[0] == pytest.approx((-12.0, 0.3, -1.0))
+            assert args[1] == pytest.approx((3.0, 0.1, 0.2))
+            assert 'target_acceleration_e' not in kwargs
+            assert node.px4_command is not None, node.control_reason
+            accelerations.append(node.visual_result.acceleration_d_e)
+        assert len(captured) == 2
+        assert accelerations[1] == pytest.approx(accelerations[0])
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
