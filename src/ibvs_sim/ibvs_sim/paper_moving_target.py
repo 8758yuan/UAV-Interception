@@ -136,8 +136,8 @@ class PaperMovingTarget(Node):
         self.declare_parameter('origin_y_m', 0.0)
         self.declare_parameter('origin_z_m', 4.0)
         self.declare_parameter('speed_m_s', 5.0)
-        self.declare_parameter('radius_x_m', 4.0)
-        self.declare_parameter('radius_y_m', 2.0)
+        self.declare_parameter('radius_x_m', 10.0)
+        self.declare_parameter('radius_y_m', 5.0)
         self.declare_parameter('update_rate_hz', 100.0)
         self.declare_parameter('start_on_observer_reset', True)
         self.declare_parameter(
