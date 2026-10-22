@@ -70,91 +70,75 @@ def _feature(clock: _Clock, height_m: float) -> VisionFeature:
     # With PX4's identity FRD-to-NED attitude, camera +Z looks north and
     # camera +Y looks down. The static target is 10 m ahead of the camera
     # and at ENU height 1.5 m. The camera and body origin share a height.
+    message.width_norm = 0.26 / 10.0
     message.x_norm = 0.0
     message.y_norm = (height_m - 1.5) / 10.0
     return message
 
 
-def _send_sample(
-    node: VisionInterceptionCoordinator,
-    clock: _Clock,
-    sample_index: int,
-    height_m: float,
-) -> None:
-    clock.nanoseconds = BASE_NS + sample_index * 250_000_000
+def _send_frame(node, clock, height_m=3.0):
     node._odometry_callback(_odometry(height_m))
     node._feature_callback(_feature(clock, height_m))
 
 
-def test_multiview_bootstrap_needs_parallax_and_estimates_ten_meters(
-    coordinator,
-) -> None:
+def test_one_frame_initializes_without_parallax_or_settling(coordinator):
     node, clock = coordinator
-    assert node.range_estimator.config.model == 'static'
-
-    for index, height_m in enumerate(np.linspace(0.0, 0.05, 20)):
-        _send_sample(node, clock, index, height_m)
-    assert node.range_estimate is not None
-    assert not node.range_estimate.accepted
-    assert node.range_estimate.reason in (
-        'insufficient_parallax', 'insufficient_transverse_baseline'
-    )
-    assert node._range_bootstrap_message(clock.nanoseconds) is None
-
-    for index, height_m in enumerate(np.linspace(0.2, 3.0, 21), start=20):
-        _send_sample(node, clock, index, height_m)
-    assert node.range_estimate is not None
-    assert node.range_estimate.accepted
-    assert node.range_estimate.quality.parallax_deg > (
-        node.range_estimator.config.min_parallax_deg
-    )
-    assert node._range_bootstrap_message(clock.nanoseconds) is None
-    assert node.range_block_reason == 'observability_settling'
-    for index in range(41, 53):
-        _send_sample(node, clock, index, 3.0)
+    _send_frame(node, clock)
     bootstrap = node._range_bootstrap_message(clock.nanoseconds)
     assert bootstrap is not None
-    # The camera is 0.14 m ahead of the vehicle origin, so the target is
-    # 10.14 m north of the vehicle; its vertical offset remains 1.5 m.
-    expected_range_m = math.hypot(10.14, 1.5)
-    assert bootstrap.range_m == pytest.approx(expected_range_m, abs=0.1)
+    # Camera is 0.14 m forward; optical depth is 10 m, not radial distance.
     assert (bootstrap.p_r.x, bootstrap.p_r.y, bootstrap.p_r.z) == (
-        pytest.approx((0.0, -10.14, 1.5), abs=0.1)
+        pytest.approx((0.0, -10.14, 1.5))
     )
-    assert bootstrap.sample_count >= node.range_estimator.config.min_samples
+    assert bootstrap.range_m == pytest.approx(math.hypot(10.14, 1.5))
+    assert bootstrap.sample_count == 1
+    assert bootstrap.range_std_m > 2.0  # Coarse distance is accepted.
     covariance = np.asarray(bootstrap.relative_covariance).reshape((6, 6))
-    assert covariance == pytest.approx(covariance.T, abs=1e-10)
-    assert np.linalg.eigvalsh(covariance)[0] >= -1e-10
-    assert np.all(np.diag(covariance[:3, :3]) >= 0.25)
-    assert np.all(np.diag(covariance[3:, 3:]) >= 25.0)
-    assert 0.0 < bootstrap.range_std_m <= (
-        node.range_estimator.config.max_range_std_m
-    )
-    assert bootstrap.range_std_m / bootstrap.range_m <= (
-        node.bootstrap_max_relative_std
-    )
+    assert covariance == pytest.approx(covariance.T)
+    assert np.linalg.eigvalsh(covariance)[0] > 0.0
+    assert np.diag(covariance[3:, 3:]) == pytest.approx((25.0,) * 3)
 
 
-def test_feature_without_capture_time_aligned_pose_is_ignored(
-    coordinator,
-) -> None:
+def test_delayed_image_uses_capture_pose_and_current_own_velocity(coordinator):
     node, clock = coordinator
-    _send_sample(node, clock, 0, 0.0)
-    assert len(node.range_estimator._samples) == 1
+    _send_frame(node, clock)
+    clock.nanoseconds += 80_000_000
+    node._odometry_callback(_odometry(3.5))
+    node.vehicle_velocity_ned = np.array((1.0, 2.0, -0.3))
+    bootstrap = node._range_bootstrap_message(clock.nanoseconds)
+    assert bootstrap is not None
+    assert (bootstrap.p_r.x, bootstrap.p_r.y, bootstrap.p_r.z) == (
+        pytest.approx((0.0, -10.14, 2.0))
+    )
+    assert (bootstrap.v_r.x, bootstrap.v_r.y, bootstrap.v_r.z) == (
+        pytest.approx((2.0, 1.0, 0.3))
+    )
+    covariance = np.asarray(bootstrap.relative_covariance).reshape((6, 6))
+    assert covariance[:3, 3:] == pytest.approx(0.08 * 25.0 * np.eye(3))
 
-    mismatch = _feature(clock, 0.0)
-    mismatch.capture_stamp = Time(
+
+@pytest.mark.parametrize('width', (0.0, -0.01, math.nan, math.inf))
+def test_invalid_box_width_cannot_initialize(coordinator, width):
+    node, clock = coordinator
+    _send_frame(node, clock)
+    node.feature.width_norm = width
+    assert node._range_bootstrap_message(clock.nanoseconds) is None
+    assert node.range_block_reason == 'invalid_size_measurement'
+
+
+def test_capture_pose_mismatch_and_stale_image_cannot_initialize(coordinator):
+    node, clock = coordinator
+    _send_frame(node, clock)
+    node.feature.capture_stamp = Time(
         nanoseconds=clock.nanoseconds - 40_000_000
     ).to_msg()
-    node._feature_callback(mismatch)
-    assert len(node.range_estimator._samples) == 1
-
-    expired = _feature(clock, 0.0)
-    expired.capture_stamp = Time(
-        nanoseconds=clock.nanoseconds - node.bootstrap_pose_history_ns - 1
+    assert node._range_bootstrap_message(clock.nanoseconds) is None
+    assert node.range_block_reason == 'waiting_for_capture_pose'
+    node.feature.capture_stamp = Time(
+        nanoseconds=clock.nanoseconds - 600_000_000
     ).to_msg()
-    node._feature_callback(expired)
-    assert len(node.range_estimator._samples) == 1
+    assert node._range_bootstrap_message(clock.nanoseconds) is None
+    assert node.range_block_reason == 'size_measurement_stale'
 
 
 def test_ready_gate_requires_bootstrap_sent(coordinator, monkeypatch) -> None:
@@ -189,40 +173,21 @@ def test_ready_gate_requires_bootstrap_sent(coordinator, monkeypatch) -> None:
     assert node.gate.phase == InterceptionPhase.PRESTREAM
 
 
-def test_range_probe_is_bounded_and_stops_when_lock_is_revoked(
-    coordinator,
-) -> None:
+def test_first_ready_frame_sends_one_bootstrap(coordinator, monkeypatch):
     node, clock = coordinator
     node.vehicle_heading_ned_rad = 0.0
-    node._feature_callback(_feature(clock, 1.5))
-    node._update_visual_acquisition(
-        clock.nanoseconds * 1e-9, clock.nanoseconds
+    _send_frame(node, clock)
+    published = []
+    resets = []
+    monkeypatch.setattr(
+        node.observer_bootstrap_pub, 'publish', published.append
     )
+    monkeypatch.setattr(node.observer_reset_pub, 'publish', resets.append)
+    now_s = clock.nanoseconds * 1e-9
+    node._update_visual_acquisition(now_s, clock.nanoseconds)
     assert node.acquisition_command.ready
-    assert node.range_estimate is None
-    assert node.range_probe_started_s == clock.nanoseconds * 1e-9
-
-    start_ns = clock.nanoseconds
-    period_ns = int(node.range_probe_period_s * 1e9)
-    clock.nanoseconds = start_ns + period_ns // 4
-    assert node._range_probe_offset_m() == pytest.approx(
-        node.range_probe_amplitude_m
-    )
-    for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
-        clock.nanoseconds = start_ns + int(period_ns * fraction)
-        assert abs(node._range_probe_offset_m()) <= (
-            node.range_probe_amplitude_m + 1e-12
-        )
-
-    node.bootstrap_sent = True
-    assert node._range_probe_offset_m() == 0.0
-    node.bootstrap_sent = False
-    lost = VisionFeature()
-    lost.valid = False
-    node._feature_callback(lost)
-    node._update_visual_acquisition(
-        clock.nanoseconds * 1e-9, clock.nanoseconds
-    )
-    assert not node.acquisition_command.ready
-    assert node.range_probe_started_s is None
-    assert node._range_probe_offset_m() == 0.0
+    assert node.bootstrap_sent
+    assert len(published) == len(resets) == 1
+    assert published[0].sample_count == 1
+    node._update_visual_acquisition(now_s, clock.nanoseconds)
+    assert len(published) == len(resets) == 1

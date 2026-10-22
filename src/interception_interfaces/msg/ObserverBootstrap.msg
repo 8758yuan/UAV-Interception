@@ -1,4 +1,4 @@
-# Relative state estimated from pre-interception bearings and onboard motion.
+# Relative state initialized from known target size, image and onboard pose.
 # p_r = p_vehicle - p_target; v_r = v_vehicle - v_target, both in ENU.
 builtin_interfaces/Time stamp
 geometry_msgs/Vector3 p_r

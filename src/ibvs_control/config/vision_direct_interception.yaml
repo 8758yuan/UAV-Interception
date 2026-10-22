@@ -38,7 +38,7 @@ vision_interception_coordinator:
     observer_topic: /interception/observer/state
     # 请求观测器重新初始化的服务话题。
     observer_reset_topic: /interception/observer/reset
-    # 起飞期多视线估计在拦截复位时通过此话题交给观测器。
+    # 单帧尺寸粗估距在拦截复位时通过此话题交给观测器。
     observer_bootstrap_topic: /interception/observer/bootstrap
     # 控制调试信息输出话题。
     debug_topic: /interception/control/debug
@@ -100,33 +100,18 @@ vision_interception_coordinator:
                               0.0, -1.0, 0.0]
     # 相机光心相对FLU机体系原点的位置(m)。
     camera_position_b_m: [0.14, 0.0, 0.0]
-    # 起飞/搜索期间以图像拍摄时刻匹配本机位姿，持续估计目标距离。
-    # 当前静止目标试验选static；目标在估距期间移动时改为constant_velocity。
-    range_target_model: static
+    # 已知气球直径(m)，与仿真半径0.13 m一致；Z≈直径/(框宽/fx)。
+    target_diameter_m: 0.26
+    # 单帧粗估深度的相对标准差先验；0.3表示30%，不是启动门槛。
+    range_depth_relative_std: 0.3
+    # 归一化图像坐标噪声，用于初始位置协方差。
     range_image_noise_std: 0.015
-    range_min_samples: 20
-    range_max_samples: 500
-    range_window_s: 30.0
-    range_min_time_span_s: 2.0
-    range_min_parallax_deg: 1.0
-    range_min_transverse_baseline_m: 2.0
-    range_max_condition_number: 100.0
-    range_max_reprojection_rms: 0.03
-    range_outlier_reprojection_threshold: 0.06
-    range_max_outlier_fraction: 0.2
-    range_max_std_m: 2.0
-    range_max_relative_std: 0.2
-    range_max_velocity_std_m_s: 2.0
-    # 时钟/姿态匹配与协方差保守下限。
+    # 使用拍摄时刻的相机位姿，保留原有时间匹配和数据新鲜度要求。
     range_pose_max_time_error_s: 0.03
-    range_pose_history_s: 35.0
     range_bootstrap_max_age_s: 0.5
-    range_min_observable_duration_s: 2.0
+    # 位姿误差和未知目标速度的初始标准差，不作为拒绝启动条件。
     range_position_std_floor_m: 1.0
     range_velocity_std_floor_m_s: 5.0
-    # 若起飞阶段未形成足够视差，检测到目标后缓慢升降估距。
-    range_probe_vertical_amplitude_m: 1.5
-    range_probe_vertical_period_s: 8.0
     # Gazebo整机质量(kg)，必须与模型一致。
     mass_kg: 2.1143076923
     # FLU机体系等效线性阻力(kg/s)，顺序为x/y/z。

@@ -12,7 +12,7 @@ paper_state_observer:
     bootstrap_topic: /interception/observer/bootstrap
     # true：仅在起飞且目标处于安全视线范围后收到reset时初始化观测器。
     require_interception_reset: true
-    # 在有足够多视线距离信息前，不接受固定深度猜值进入拦截。
+    # 使用已知气球尺寸的单帧粗估距初始化，不接受固定深度猜值。
     require_range_bootstrap: true
     bootstrap_max_age_s: 0.5
 

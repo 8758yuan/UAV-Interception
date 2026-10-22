@@ -344,7 +344,7 @@ class PaperStateObserverNode(Node):
                     initialization_reason = 'initialized'
                 self.last_imu_timestamp_us = None
                 source = (
-                    'multi-view range bootstrap'
+                    'known-size range bootstrap'
                     if self.require_range_bootstrap
                     else f'{self.initial_depth_m:.2f} m depth prior'
                 )

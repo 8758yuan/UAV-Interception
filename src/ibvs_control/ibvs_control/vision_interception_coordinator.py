@@ -32,11 +32,6 @@ from ibvs_control.frames import (
     px4_quaternion_to_enu_flu_rotation,
     quaternion_wxyz_to_euler,
 )
-from ibvs_control.bearing_range_estimator import (
-    BearingRangeConfig,
-    BearingRangeEstimator,
-    BearingSample,
-)
 from ibvs_control.interception_state_machine import (
     InterceptionAction,
     InterceptionGateConfig,
@@ -94,7 +89,8 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
     """
     Take off and intercept using the paper observer and Section III law.
 
-    Raw image features are used only for target acquisition and diagnostics.
+    Raw image features provide acquisition, size-based initialization and
+    diagnostics.
     Once interception is active, target bearing and relative state come only
     from the delayed observer defined by the paper.
     """
@@ -155,9 +151,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.bootstrap_pose_max_error_ns = int(
             self._float_parameter('range_pose_max_time_error_s') * 1e9
         )
-        self.bootstrap_pose_history_ns = int(
-            self._float_parameter('range_pose_history_s') * 1e9
-        )
         self.bootstrap_position_std_floor_m = self._float_parameter(
             'range_position_std_floor_m'
         )
@@ -167,66 +160,27 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.bootstrap_max_age_s = self._float_parameter(
             'range_bootstrap_max_age_s'
         )
-        self.min_observable_duration_s = self._float_parameter(
-            'range_min_observable_duration_s'
+        self.target_diameter_m = self._float_parameter('target_diameter_m')
+        self.range_depth_relative_std = self._float_parameter(
+            'range_depth_relative_std'
         )
-        self.bootstrap_max_relative_std = self._float_parameter(
-            'range_max_relative_std'
-        )
-        self.range_probe_amplitude_m = self._float_parameter(
-            'range_probe_vertical_amplitude_m'
-        )
-        self.range_probe_period_s = self._float_parameter(
-            'range_probe_vertical_period_s'
+        self.range_image_noise_std = self._float_parameter(
+            'range_image_noise_std'
         )
         if min(
             self.bootstrap_pose_max_error_ns,
-            self.bootstrap_pose_history_ns,
             self.bootstrap_position_std_floor_m,
             self.bootstrap_velocity_std_floor_m_s,
             self.bootstrap_max_age_s,
-            self.min_observable_duration_s,
-            self.bootstrap_max_relative_std,
-            self.range_probe_amplitude_m,
-            self.range_probe_period_s,
+            self.target_diameter_m,
+            self.range_depth_relative_std,
+            self.range_image_noise_std,
         ) <= 0:
-            raise ValueError('range bootstrap limits must be positive')
-        self.range_estimator = BearingRangeEstimator(BearingRangeConfig(
-            model=str(self.get_parameter('range_target_model').value),
-            image_noise_std=self._float_parameter('range_image_noise_std'),
-            min_samples=self._int_parameter('range_min_samples'),
-            max_samples=self._int_parameter('range_max_samples'),
-            max_age_s=self._float_parameter('range_window_s'),
-            min_parallax_deg=self._float_parameter('range_min_parallax_deg'),
-            min_transverse_baseline_m=self._float_parameter(
-                'range_min_transverse_baseline_m'
-            ),
-            min_time_span_s=self._float_parameter('range_min_time_span_s'),
-            max_condition_number=self._float_parameter(
-                'range_max_condition_number'
-            ),
-            max_reprojection_rms=self._float_parameter(
-                'range_max_reprojection_rms'
-            ),
-            max_range_std_m=self._float_parameter('range_max_std_m'),
-            max_velocity_std_m_s=self._float_parameter(
-                'range_max_velocity_std_m_s'
-            ),
-            outlier_reprojection_threshold=self._float_parameter(
-                'range_outlier_reprojection_threshold'
-            ),
-            max_outlier_fraction=self._float_parameter(
-                'range_max_outlier_fraction'
-            ),
-        ))
+            raise ValueError('range bootstrap parameters must be positive')
         self.bootstrap_poses: deque[_CameraPose] = deque()
-        self.range_estimate = None
-        self.last_range_fit_ns: Optional[int] = None
-        self.first_accepted_range_ns: Optional[int] = None
         self.bootstrap_sent = False
         self.last_range_reason = ''
-        self.range_block_reason = 'waiting_for_time_aligned_bearings'
-        self.range_probe_started_s: Optional[float] = None
+        self.range_block_reason = 'waiting_for_size_measurement'
         # The configured pitch is positive from body-forward toward body-up.
         # The camera-centre trial uses zero so the controlled LOS and the
         # camera optical axis are the same physical impact line.
@@ -484,29 +438,13 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             ],
         )
         self.declare_parameter('camera_position_b_m', [0.14, 0.0, 0.0])
-        self.declare_parameter('range_target_model', 'static')
+        self.declare_parameter('target_diameter_m', 0.26)
+        self.declare_parameter('range_depth_relative_std', 0.3)
         self.declare_parameter('range_image_noise_std', 0.015)
-        self.declare_parameter('range_min_samples', 20)
-        self.declare_parameter('range_max_samples', 500)
-        self.declare_parameter('range_window_s', 30.0)
-        self.declare_parameter('range_min_parallax_deg', 1.0)
-        self.declare_parameter('range_min_transverse_baseline_m', 2.0)
-        self.declare_parameter('range_min_time_span_s', 2.0)
-        self.declare_parameter('range_max_condition_number', 100.0)
-        self.declare_parameter('range_max_reprojection_rms', 0.03)
-        self.declare_parameter('range_max_std_m', 2.0)
-        self.declare_parameter('range_max_velocity_std_m_s', 2.0)
-        self.declare_parameter('range_outlier_reprojection_threshold', 0.06)
-        self.declare_parameter('range_max_outlier_fraction', 0.2)
         self.declare_parameter('range_pose_max_time_error_s', 0.03)
-        self.declare_parameter('range_pose_history_s', 35.0)
         self.declare_parameter('range_position_std_floor_m', 1.0)
         self.declare_parameter('range_velocity_std_floor_m_s', 5.0)
         self.declare_parameter('range_bootstrap_max_age_s', 0.5)
-        self.declare_parameter('range_min_observable_duration_s', 2.0)
-        self.declare_parameter('range_max_relative_std', 0.2)
-        self.declare_parameter('range_probe_vertical_amplitude_m', 1.5)
-        self.declare_parameter('range_probe_vertical_period_s', 8.0)
         self.declare_parameter('image_area_px', 1228800.0)
         self.declare_parameter('visual_feature_timeout_s', 0.20)
         self.declare_parameter('visual_search_yaw_rate_rad_s', 0.35)
@@ -548,13 +486,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             self.last_valid_feature = message
         if not message.valid and self.terminal_started_s is None:
             self.control_reason = 'camera_target_not_detected'
-        if (
-            message.valid
-            and not self.bootstrap_sent
-            and self.state_machine.phase in (FlightPhase.TAKEOFF,
-                                             FlightPhase.HOLD)
-        ):
-            self._record_range_bearing(message)
 
     def _observer_callback(self, message: ObserverState) -> None:
         """Accept the sole state input used by the paper controller."""
@@ -592,12 +523,10 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                 and pose.stamp_ns <= self.bootstrap_poses[-1].stamp_ns
             ):
                 self.bootstrap_poses.clear()
-                self.range_estimator.clear()
-                self.range_estimate = None
-                self.last_range_fit_ns = None
-                self.first_accepted_range_ns = None
+            if not np.all(np.isfinite(camera_position_e)):
+                return
             self.bootstrap_poses.append(pose)
-            cutoff_ns = pose.stamp_ns - self.bootstrap_pose_history_ns
+            cutoff_ns = pose.stamp_ns - int(self.bootstrap_max_age_s * 1e9)
             while (
                 self.bootstrap_poses
                 and self.bootstrap_poses[0].stamp_ns < cutoff_ns
@@ -621,74 +550,32 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             return None
         return pose
 
-    def _record_range_bearing(self, message: VisionFeature) -> None:
-        """Update the pre-interception range estimate from captured rays."""
-        capture_ns = (
-            int(message.capture_stamp.sec) * 1_000_000_000
-            + int(message.capture_stamp.nanosec)
-        )
-        now_ns = self.get_clock().now().nanoseconds
-        if (
-            capture_ns <= 0
-            or capture_ns > now_ns + self.bootstrap_pose_max_error_ns
-            or now_ns - capture_ns > self.bootstrap_pose_history_ns
-        ):
-            return
-        pose = self._matching_bootstrap_pose(capture_ns)
-        if pose is None:
-            return
-        try:
-            added = self.range_estimator.add(BearingSample(
-                timestamp_s=capture_ns * 1e-9,
-                image_xy=(float(message.x_norm), float(message.y_norm)),
-                camera_position_enu_m=tuple(pose.camera_position_e),
-                camera_to_enu_rotation=pose.camera_to_earth,
-            ))
-            if not added:
-                return
-            if (
-                self.last_range_fit_ns is None
-                or capture_ns - self.last_range_fit_ns >= 200_000_000
-            ):
-                self.range_estimate = self.range_estimator.estimate()
-                self.last_range_fit_ns = capture_ns
-                if self.range_estimate.accepted:
-                    if self.first_accepted_range_ns is None:
-                        self.first_accepted_range_ns = capture_ns
-                else:
-                    self.first_accepted_range_ns = None
-        except (TypeError, ValueError, np.linalg.LinAlgError) as error:
-            reason = f'range_estimation_error: {error}'
-            if reason != self.last_range_reason:
-                self.get_logger().warning(reason)
-                self.last_range_reason = reason
-
     def _range_bootstrap_message(
         self, now_ns: int
     ) -> Optional[ObserverBootstrap]:
-        """Convert an accepted target fit into observer relative state."""
-        estimate = self.range_estimate
-        if (
-            estimate is None
-            or not estimate.accepted
-            or not self.bootstrap_poses
-            or estimate.reference_time_s is None
-        ):
-            self.range_block_reason = (
-                estimate.reason if estimate is not None
-                else 'waiting_for_time_aligned_bearings'
-            )
+        """Initialize from one known-size box and its capture-time pose."""
+        feature = self._fresh_feature(now_ns)
+        if feature is None:
+            self.range_block_reason = 'waiting_for_size_measurement'
             return None
-        if (
-            self.first_accepted_range_ns is None
-            or now_ns - self.first_accepted_range_ns
-            < self.min_observable_duration_s * 1e9
+        width = float(feature.width_norm)
+        ray = np.array((feature.x_norm, feature.y_norm, 1.0))
+        if not math.isfinite(width) or width <= 0.0 or not np.all(
+            np.isfinite(ray)
         ):
-            self.range_block_reason = 'observability_settling'
+            self.range_block_reason = 'invalid_size_measurement'
             return None
-        delta_s = now_ns * 1e-9 - estimate.reference_time_s
-        if not 0.0 <= delta_s <= self.bootstrap_max_age_s:
-            self.range_block_reason = 'range_estimate_stale'
+        capture_ns = (
+            int(feature.capture_stamp.sec) * 1_000_000_000
+            + int(feature.capture_stamp.nanosec)
+        )
+        age_s = (now_ns - capture_ns) * 1e-9
+        if capture_ns <= 0 or not 0.0 <= age_s <= self.bootstrap_max_age_s:
+            self.range_block_reason = 'size_measurement_stale'
+            return None
+        capture_pose = self._matching_bootstrap_pose(capture_ns)
+        if capture_pose is None:
+            self.range_block_reason = 'waiting_for_capture_pose'
             return None
         pose = self.bootstrap_poses[-1]
         if now_ns - pose.stamp_ns > self.bootstrap_pose_max_error_ns:
@@ -700,68 +587,59 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         if velocity_ned is None or not np.all(np.isfinite(velocity_ned)):
             self.range_block_reason = 'vehicle_velocity_unavailable'
             return None
-        vehicle_velocity_e = np.asarray(ned_to_enu(velocity_ned))
-        target_position_e = estimate.target_position_enu_m.copy()
-        target_velocity_e = (
-            estimate.target_velocity_enu_m_s.copy()
-            if estimate.target_velocity_enu_m_s is not None
-            else np.zeros(3)
+
+        # shortcut: small-angle depth; use sphere projection if bias matters.
+        depth = self.target_diameter_m / width
+        target_position_e = (
+            capture_pose.camera_position_e
+            + capture_pose.camera_to_earth @ (depth * ray)
         )
-        covariance = np.asarray(estimate.covariance_enu, dtype=float)
-        relative_covariance = np.zeros((6, 6))
-        if covariance.shape == (6, 6):
-            transition = np.eye(6)
-            transition[:3, 3:] = np.eye(3) * delta_s
-            relative_covariance = (
-                transition @ covariance @ transition.T
-            )
-            target_position_e += target_velocity_e * delta_s
-        elif covariance.shape == (3, 3):
-            relative_covariance[:3, :3] = covariance
-        else:
-            self.range_block_reason = 'invalid_estimate_covariance'
+        p_r_e = pose.vehicle_position_e - target_position_e
+        range_m = float(np.linalg.norm(p_r_e))
+        if not np.all(np.isfinite(p_r_e)) or not math.isfinite(
+            range_m
+        ) or range_m <= 0.0:
+            self.range_block_reason = 'invalid_estimated_range'
             return None
-        relative_covariance[:3, :3] += (
-            self.bootstrap_position_std_floor_m ** 2 * np.eye(3)
+
+        # Coarse depth and image uncertainty are priors, not activation gates.
+        covariance_c = (
+            (depth * self.range_depth_relative_std) ** 2 * np.outer(ray, ray)
+            + (depth * self.range_image_noise_std) ** 2
+            * np.diag((1.0, 1.0, 0.0))
         )
-        relative_covariance[3:, 3:] += (
+        relative_covariance = np.zeros((6, 6))
+        rotation = capture_pose.camera_to_earth
+        relative_covariance[:3, :3] = (
+            rotation @ covariance_c @ rotation.T
+            + self.bootstrap_position_std_floor_m ** 2 * np.eye(3)
+        )
+        relative_covariance[3:, 3:] = (
             self.bootstrap_velocity_std_floor_m_s ** 2 * np.eye(3)
         )
+        transition = np.eye(6)
+        transition[:3, 3:] = age_s * np.eye(3)
+        relative_covariance = transition @ relative_covariance @ transition.T
         relative_covariance = (
             relative_covariance + relative_covariance.T
         ) / 2.0
-        p_r_e = pose.vehicle_position_e - target_position_e
-        v_r_e = vehicle_velocity_e - target_velocity_e
-        target_c = pose.camera_to_earth.T @ (
-            target_position_e - pose.camera_position_e
-        )
-        if target_c[2] <= self.range_estimator.config.min_depth_m:
-            self.range_block_reason = 'target_behind_camera'
-            return None
-        range_m = float(np.linalg.norm(p_r_e))
-        if range_m <= 0.0:
-            self.range_block_reason = 'invalid_estimated_range'
-            return None
         radial = p_r_e / range_m
-        range_std_m = math.sqrt(max(
-            0.0,
-            float(radial @ relative_covariance[:3, :3] @ radial),
+        range_std_m = math.sqrt(float(
+            radial @ relative_covariance[:3, :3] @ radial
         ))
-        if (
-            range_std_m > self.range_estimator.config.max_range_std_m
-            or range_std_m / range_m > self.bootstrap_max_relative_std
+        if not np.all(np.isfinite(relative_covariance)) or not math.isfinite(
+            range_std_m
         ):
-            self.range_block_reason = 'uncertain_relative_range'
+            self.range_block_reason = 'invalid_estimate_covariance'
             return None
         self.range_block_reason = 'ok'
         bootstrap = ObserverBootstrap()
         bootstrap.stamp = self.get_clock().now().to_msg()
         _assign_vector(bootstrap.p_r, p_r_e)
-        _assign_vector(bootstrap.v_r, v_r_e)
-        bootstrap.relative_covariance = tuple(
-            relative_covariance.reshape(-1)
-        )
-        bootstrap.sample_count = estimate.quality.sample_count
+        # Zero target velocity prior: relative velocity equals own ENU velocity.
+        _assign_vector(bootstrap.v_r, ned_to_enu(velocity_ned))
+        bootstrap.relative_covariance = tuple(relative_covariance.reshape(-1))
+        bootstrap.sample_count = 1
         bootstrap.range_m = range_m
         bootstrap.range_std_m = range_std_m
         return bootstrap
@@ -1110,20 +988,15 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         )
         self.acquisition_command = command
         if command.ready and not self.bootstrap_sent:
-            if self.range_probe_started_s is None:
-                self.range_probe_started_s = now_s
             bootstrap = self._range_bootstrap_message(now_ns)
             if bootstrap is not None:
                 self._reset_observer_for_interception(bootstrap)
-                self.range_probe_started_s = None
             else:
                 reason = self.range_block_reason
                 self.control_reason = f'waiting_for_range_bootstrap:{reason}'
                 if reason != self.last_range_reason:
                     self.get_logger().info(self.control_reason)
                     self.last_range_reason = reason
-        elif not command.ready:
-            self.range_probe_started_s = None
         if command.phase != self.last_acquisition_phase:
             self.get_logger().warning(
                 f'Visual acquisition transition: '
@@ -1161,11 +1034,11 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.get_logger().warning(
             'Resetting observer with '
             f'{bootstrap.range_m:.2f} +/- {bootstrap.range_std_m:.2f} m '
-            f'bootstrap from {bootstrap.sample_count} bearings'
+            'bootstrap from one known-size YOLO box'
         )
 
     def _publish_visual_acquisition_setpoint(self) -> None:
-        """Publish search or hold setpoints with range-probe motion."""
+        """Publish the visual search or hold position setpoint."""
         command = self.acquisition_command
         home_x = self.state_machine.home_x
         home_y = self.state_machine.home_y
@@ -1183,12 +1056,9 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.offboard_pub.publish(mode)
         setpoint = TrajectorySetpoint()
         setpoint.timestamp = self._timestamp_us()
-        # Search and range probing share the flight state machine's
-        # existing altitude envelope.
         relative_altitude = _clip(
             self.state_machine.config.target_altitude_m
-            - command.vertical_offset_m
-            - self._range_probe_offset_m(),
+            - command.vertical_offset_m,
             self.state_machine.config.min_hold_altitude_m,
             self.state_machine.config.max_relative_altitude_m,
         )
@@ -1203,19 +1073,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.commanded_velocity_ned.fill(0.0)
         self.commanded_acceleration_ned.fill(0.0)
         self.commanded_thrust_normalized = math.nan
-
-    def _range_probe_offset_m(self) -> float:
-        """Provide vertical parallax while a target is visible for bootstrap."""
-        if self.range_probe_started_s is None or self.bootstrap_sent:
-            return 0.0
-        elapsed_s = max(
-            0.0,
-            self.get_clock().now().nanoseconds * 1e-9
-            - self.range_probe_started_s,
-        )
-        return self.range_probe_amplitude_m * math.sin(
-            2.0 * math.pi * elapsed_s / self.range_probe_period_s
-        )
 
     def _publish_hover_rate_setpoint(self) -> None:
         command = adapt_rate_thrust_command(

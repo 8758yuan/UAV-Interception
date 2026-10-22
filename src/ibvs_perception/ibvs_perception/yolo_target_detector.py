@@ -241,6 +241,9 @@ class YoloTargetDetector(Node):
                 feature.x_norm, feature.y_norm = normalized_pixel(
                     feature.u, feature.v, intrinsics
                 )
+                feature.width_norm = (
+                    (selected.x2 - selected.x1) / intrinsics.fx
+                )
                 feature.area_px = selected.area_px
                 feature.valid = True
                 feature.reason = 'ok'
