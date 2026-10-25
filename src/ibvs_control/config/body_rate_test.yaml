@@ -38,10 +38,7 @@ body_rate_test:
     # 起飞完成判据：高度误差(m)与垂直速度(m/s)。
     altitude_tolerance_m: 0.15
     vertical_speed_tolerance_m_s: 0.30
-    # 测试安全围栏：水平距离/相对高度(m)与倾角(deg)。
-    max_horizontal_distance_m: 3.0
-    max_relative_altitude_m: 4.0
-    min_hold_altitude_m: 0.5
+    # 测试最大机体倾角(deg)。
     max_tilt_deg: 20.0
 
     # 由角速度测试流程决定降落时机，不在起飞状态机中自动降落。

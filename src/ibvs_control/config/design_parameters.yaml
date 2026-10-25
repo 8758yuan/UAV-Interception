@@ -14,7 +14,7 @@ vision_interception_coordinator:
     # 位置反馈增益，按ENU世界坐标系[x, y, z]排列，各分量须为有限正数。
     # 反馈项为[-kx*p_r.x, -ky*p_r.y, -kz*p_r.z]；原论文三轴均为1.0。
     # 减小对应分量可减弱该方向的位置反馈加速度。
-    position_gain: [0.25, 0.3, 0.8]
+    position_gain: [0.3, 0.3, 0.8]
 
     # 论文式(12)的Barrier边界k_b，本项目用角度配置：
     # k_b=1-cos(safe_los_angle_deg)。数值减小可让控制器更早抑制目标偏移。
@@ -25,7 +25,7 @@ vision_interception_coordinator:
 
     # 论文式(29)的角速度饱和上限omega_m(rad/s)。
     # 越大姿态响应越快，但会在拦截启动时使目标迅速偏离图像中心。
-    omega_limit_rad_s: 1.8
+    omega_limit_rad_s: 2.0
 
     # 最大总推力(N)，必须与Gazebo/电机模型一致。
     # 该参数同时作为论文控制器的推力饱和上限和PX4推力映射上限。
@@ -57,6 +57,6 @@ paper_state_observer:
     image_noise_std: 0.015
 
     # 论文延迟周期D及DKF频率。应满足D≈图像总延迟×DKF频率。
-    # 当前80 ms×50 Hz=4。
+    # 保持50 Hz、D=4（补偿80 ms）；图像延迟70 ms，与补偿相差10 ms。
     dkf_delay_steps: 4
     dkf_update_rate_hz: 50.0

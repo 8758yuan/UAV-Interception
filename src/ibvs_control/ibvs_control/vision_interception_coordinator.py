@@ -80,11 +80,6 @@ def _assign_vector(message, values) -> None:
     message.x, message.y, message.z = (float(value) for value in values)
 
 
-def _clip(value: float, lower: float, upper: float) -> float:
-    """Clamp a scalar without introducing another control dependency."""
-    return min(max(value, lower), upper)
-
-
 class VisionInterceptionCoordinator(OffboardTakeoff):
     """
     Take off and intercept using the paper observer and Section III law.
@@ -1056,11 +1051,9 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.offboard_pub.publish(mode)
         setpoint = TrajectorySetpoint()
         setpoint.timestamp = self._timestamp_us()
-        relative_altitude = _clip(
+        relative_altitude = (
             self.state_machine.config.target_altitude_m
-            - command.vertical_offset_m,
-            self.state_machine.config.min_hold_altitude_m,
-            self.state_machine.config.max_relative_altitude_m,
+            - command.vertical_offset_m
         )
         setpoint.position = [home_x, home_y, home_z - relative_altitude]
         setpoint.velocity = [math.nan, math.nan, math.nan]

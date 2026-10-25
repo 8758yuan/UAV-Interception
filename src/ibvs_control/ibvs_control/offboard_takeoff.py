@@ -3,8 +3,7 @@ PX4 Offboard takeoff, hold, and landing node for the P1 flight-interface test.
 
 The node streams local NED position setpoints while a feedback-driven state
 machine requests Offboard mode and arming.  It automatically aborts to a PX4
-land command after telemetry loss, failsafe, invalid data, excessive tilt, or
-geofence violations.
+land command after telemetry loss, failsafe, invalid data, or excessive tilt.
 """
 
 import math
@@ -88,15 +87,6 @@ class OffboardTakeoff(Node):
             hold_duration_s=self._float_parameter('hold_duration_s'),
             land_timeout_s=self._float_parameter('land_timeout_s'),
             telemetry_timeout_s=self._float_parameter('telemetry_timeout_s'),
-            max_horizontal_distance_m=self._float_parameter(
-                'max_horizontal_distance_m'
-            ),
-            max_relative_altitude_m=self._float_parameter(
-                'max_relative_altitude_m'
-            ),
-            min_hold_altitude_m=self._float_parameter(
-                'min_hold_altitude_m'
-            ),
             max_tilt_rad=math.radians(
                 self._float_parameter('max_tilt_deg')
             ),
@@ -214,10 +204,6 @@ class OffboardTakeoff(Node):
             'hold_duration_s': 10.0,
             'land_timeout_s': 30.0,
             'telemetry_timeout_s': 1.0,
-            'max_horizontal_distance_m': 3.0,
-            # 起飞/搜索阶段相对home点允许的最大高度，单位m。
-            'max_relative_altitude_m': 50.0,
-            'min_hold_altitude_m': 0.5,
             'max_tilt_deg': 35.0,
         }
         for name, default in numeric_defaults.items():

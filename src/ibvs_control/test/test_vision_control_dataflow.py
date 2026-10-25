@@ -164,12 +164,11 @@ def test_trial_launches_and_records_observer() -> None:
     assert "'/fmu/out/sensor_combined'" in trial_launch
     assert "'speed_limit_m_s'" in trial_launch
     assert "'interception_tilt_limit_deg': ParameterValue" in trial_launch
-    assert "'max_horizontal_distance_m': ParameterValue" in trial_launch
     assert "'design_parameters.yaml'" in trial_launch
 
 
-def test_sitl_delay_and_dkf_period_configuration_match_paper() -> None:
-    """Eighty milliseconds at 50 Hz is D=4, not 16 IMU samples."""
+def test_sitl_delay_and_dkf_period_configuration() -> None:
+    """SITL uses 70 ms; DKF retains D=4 at 50 Hz (80 ms)."""
     workspace_src = Path(__file__).parents[2]
     paper_design_config = (
         workspace_src
@@ -185,7 +184,7 @@ def test_sitl_delay_and_dkf_period_configuration_match_paper() -> None:
     ).read_text(encoding='utf-8')
     assert 'dkf_delay_steps: 4' in paper_design_config
     assert 'dkf_update_rate_hz: 50.0' in paper_design_config
-    assert "default_value='0.08'" in vision_launch
+    assert "default_value='0.07'" in vision_launch
 
 
 def test_paper_design_parameters_have_one_configuration_source() -> None:
@@ -314,7 +313,6 @@ def test_visual_search_configuration_is_enabled_for_flight() -> None:
     assert 'visual_search_yaw_rate_rad_s: 0.20' in config
     assert 'visual_search_vertical_amplitude_m: 3.0' in config
     assert 'visual_search_vertical_period_s: 20.0' in config
-    assert 'max_relative_altitude_m: 50.0' in config
 
 
 def test_camera_extrinsics_match_between_observer_and_controller() -> None:

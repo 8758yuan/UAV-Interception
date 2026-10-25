@@ -84,11 +84,6 @@ vision_interception_coordinator:
     altitude_tolerance_m: 0.15
     # 起飞垂直速度容限，单位m/s。
     vertical_speed_tolerance_m_s: 0.30
-    # 相对起飞点的水平距离围栏(m)，0表示关闭。
-    max_horizontal_distance_m: 0.0
-    # 相对高度上限(m)。
-    max_relative_altitude_m: 50.0
-    min_hold_altitude_m: 0.5
     # 整机最终倾角保护(deg)，应高于interception_tilt_limit_deg。
     max_tilt_deg: 60.0
 
@@ -126,7 +121,7 @@ vision_interception_coordinator:
     visual_feature_timeout_s: 0.20
     # 搜索偏航速度(rad/s)；增大可更快扫一圈，但图像更易模糊。
     visual_search_yaw_rate_rad_s: 0.20
-    # 垂直搜索振幅(m)和周期(s)；振幅必须位于高度围栏内。
+    # 垂直搜索振幅(m)和周期(s)。
     visual_search_vertical_amplitude_m: 3.0
     visual_search_vertical_period_s: 20.0
     # 目标连续丢失多久后重启搜索(s)。

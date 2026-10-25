@@ -81,6 +81,33 @@ def _send_frame(node, clock, height_m=3.0):
     node._feature_callback(_feature(clock, height_m))
 
 
+@pytest.mark.parametrize('relative_altitude_m', [-1.0, 60.0])
+def test_visual_search_publishes_height_without_fence(
+    coordinator, relative_altitude_m,
+):
+    node, _ = coordinator
+    node.state_machine.home_x = 1.0
+    node.state_machine.home_y = 2.0
+    node.state_machine.home_z = 3.0
+    node.acquisition_command = SimpleNamespace(
+        vertical_offset_m=(
+            node.state_machine.config.target_altitude_m - relative_altitude_m
+        ),
+        yaw_setpoint_rad=0.4,
+    )
+    modes, setpoints = [], []
+    node.offboard_pub = SimpleNamespace(publish=modes.append)
+    node.trajectory_pub = SimpleNamespace(publish=setpoints.append)
+
+    node._publish_visual_acquisition_setpoint()
+
+    assert modes[0].position
+    assert list(setpoints[0].position) == pytest.approx(
+        [1.0, 2.0, 3.0 - relative_altitude_m]
+    )
+    assert setpoints[0].yaw == pytest.approx(0.4)
+
+
 def test_one_frame_initializes_without_parallax_or_settling(coordinator):
     node, clock = coordinator
     _send_frame(node, clock)

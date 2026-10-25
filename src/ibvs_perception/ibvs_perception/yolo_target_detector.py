@@ -55,7 +55,7 @@ class YoloTargetDetector(Node):
         self.declare_parameter('iou_threshold', 0.45)
         self.declare_parameter('inference_size', 640)
         self.declare_parameter('device', '')
-        self.declare_parameter('image_delay_s', 0.08)
+        self.declare_parameter('image_delay_s', 0.07)
         self.declare_parameter('delay_poll_period_s', 0.005)
         self.declare_parameter('fallback_width', 1280)
         self.declare_parameter('fallback_height', 960)

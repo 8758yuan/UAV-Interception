@@ -1,5 +1,7 @@
 """ROS-message integration test for the paper state observer node."""
 
+from copy import deepcopy
+
 import numpy as np
 from px4_msgs.msg import SensorCombined, VehicleAttitude
 import rclpy
@@ -9,12 +11,16 @@ from interception_interfaces.msg import VisionFeature
 from ibvs_control.paper_state_observer_node import PaperStateObserverNode
 
 
-def test_node_waits_for_interception_reset_then_updates_online() -> None:
-    """Explicit depth-prior mode still supports delayed DKF updates."""
+def test_node_waits_for_interception_reset_then_updates_online(
+    monkeypatch,
+) -> None:
+    """Skip invalid images while predicting, then resume delayed updates."""
     rclpy.init()
     node = None
     try:
         node = PaperStateObserverNode()
+        published = []
+        monkeypatch.setattr(node.publisher, 'publish', published.append)
         assert node.observer.config.camera_position_b_m == (0.14, 0.0, 0.0)
         node.require_range_bootstrap = False
         attitude = VehicleAttitude()
@@ -61,6 +67,44 @@ def test_node_waits_for_interception_reset_then_updates_online() -> None:
         assert np.linalg.norm(snapshot.state.q) == 1.0
         assert np.all(np.isfinite(snapshot.state.as_vector()))
         assert np.all(np.isfinite(snapshot.covariance))
+
+        reference = deepcopy(node.observer)
+        invalid = VisionFeature()
+        invalid.valid = False
+        invalid.reason = 'target_class_not_detected'
+        invalid.x_norm = float('nan')
+        invalid.y_norm = float('nan')
+
+        for frame, correction_count in ((invalid, 1), (feature, 2)):
+            for _ in range(4):
+                imu = SensorCombined()
+                imu.timestamp = timestamp_us
+                imu.gyro_rad = [0.0, 0.0, 0.1]
+                imu.accelerometer_m_s2 = [0.0, 0.0, -9.80665]
+                node._imu_callback(imu)
+                timestamp_us += 5_000
+                reference.predict(
+                    np.asarray(imu.gyro_rad, dtype=float) * (1, -1, -1),
+                    np.asarray(imu.accelerometer_m_s2, dtype=float)
+                    * (1, -1, -1),
+                    0.005,
+                )
+            reference.complete_dkf_cycle()
+            if frame.valid:
+                reference.correct_delayed_image((frame.x_norm, frame.y_norm))
+            node._feature_callback(frame)
+            node._dkf_callback()
+
+            snapshot = node.observer.snapshot()
+            assert published[-1].valid
+            assert published[-1].initialized
+            assert snapshot.correction_count == correction_count
+            assert snapshot.prediction_count == reference.prediction_count
+            np.testing.assert_allclose(
+                snapshot.state.as_vector(),
+                reference.snapshot().state.as_vector(),
+            )
+            np.testing.assert_allclose(snapshot.covariance, reference.P)
     finally:
         if node is not None:
             node.destroy_node()

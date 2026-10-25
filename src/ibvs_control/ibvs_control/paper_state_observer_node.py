@@ -381,10 +381,10 @@ class PaperStateObserverNode(Node):
                 self._publish(self.observer.snapshot(), 'imu_predicted')
                 return
             if not feature.valid:
+                # Skip this image; the completed IMU prediction remains valid.
                 self._publish(
                     self.observer.snapshot(),
                     feature.reason or 'image_invalid',
-                    valid=False,
                 )
                 return
             if not self.observer.delay_history_ready:

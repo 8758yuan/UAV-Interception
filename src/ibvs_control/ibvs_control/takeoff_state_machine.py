@@ -52,9 +52,6 @@ class TakeoffConfig:
     hold_duration_s: float = 10.0
     land_timeout_s: float = 30.0
     telemetry_timeout_s: float = 1.0
-    max_horizontal_distance_m: float = 3.0  # Zero disables the horizontal fence.
-    max_relative_altitude_m: float = 4.0
-    min_hold_altitude_m: float = 0.5
     max_tilt_rad: float = math.radians(35.0)
     auto_land: bool = True
 
@@ -75,33 +72,16 @@ class TakeoffConfig:
             'takeoff_timeout_s': self.takeoff_timeout_s,
             'land_timeout_s': self.land_timeout_s,
             'telemetry_timeout_s': self.telemetry_timeout_s,
-            'max_relative_altitude_m': self.max_relative_altitude_m,
-            'min_hold_altitude_m': self.min_hold_altitude_m,
             'max_tilt_rad': self.max_tilt_rad,
         }
         for name, value in positive_values.items():
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f'{name} must be finite and greater than zero')
 
-        if (
-            not math.isfinite(self.max_horizontal_distance_m)
-            or self.max_horizontal_distance_m < 0.0
-        ):
-            raise ValueError(
-                'max_horizontal_distance_m must be finite and nonnegative'
-            )
         if not math.isfinite(self.hold_duration_s):
             raise ValueError('hold_duration_s must be finite')
         if self.auto_land and self.hold_duration_s < 0.0:
             raise ValueError('hold_duration_s must not be negative')
-        if self.max_relative_altitude_m <= self.target_altitude_m:
-            raise ValueError(
-                'max_relative_altitude_m must exceed target_altitude_m'
-            )
-        if self.min_hold_altitude_m >= self.target_altitude_m:
-            raise ValueError(
-                'min_hold_altitude_m must be below target_altitude_m'
-            )
         if self.max_tilt_rad >= math.pi / 2.0:
             raise ValueError('max_tilt_rad must be less than pi/2')
 
@@ -360,7 +340,7 @@ class TakeoffStateMachine:
         return self._deduplicate(actions)
 
     def _run_safety_checks(self, now_s: float) -> None:
-        """Apply feedback, freshness, attitude, and geofence checks."""
+        """Apply feedback, freshness, and attitude checks."""
         if self.phase in (
             FlightPhase.INIT,
             FlightPhase.LAND,
@@ -386,28 +366,6 @@ class TakeoffStateMachine:
             return
         if self.attitude_received and self.tilt_rad > self.config.max_tilt_rad:
             self.abort('excessive_tilt', now_s)
-            return
-
-        if self.home_x is None or self.home_y is None:
-            return
-        horizontal_distance = math.hypot(
-            self.x - self.home_x,
-            self.y - self.home_y,
-        )
-        if (
-            self.config.max_horizontal_distance_m > 0.0
-            and horizontal_distance > self.config.max_horizontal_distance_m
-        ):
-            self.abort('horizontal_geofence', now_s)
-            return
-        if self.relative_altitude_m > self.config.max_relative_altitude_m:
-            self.abort('altitude_geofence', now_s)
-            return
-        if (
-            self.phase == FlightPhase.HOLD
-            and self.relative_altitude_m < self.config.min_hold_altitude_m
-        ):
-            self.abort('unexpected_low_altitude', now_s)
             return
 
         if self.phase in (FlightPhase.TAKEOFF, FlightPhase.HOLD):

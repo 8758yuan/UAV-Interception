@@ -287,58 +287,36 @@ def test_tilt_limit_aborts_active_flight() -> None:
     assert FlightAction.REQUEST_LAND in actions
 
 
-def test_horizontal_geofence_aborts_active_flight() -> None:
-    """Horizontal motion beyond the P1 test area triggers ABORT."""
-    machine = make_machine(max_horizontal_distance_m=1.0)
-    advance_to_takeoff(machine)
-    machine.update_status(
-        armed=True,
-        offboard=True,
-        auto_land_active=False,
-        preflight_ok=True,
-        failsafe=False,
-        now_s=1.3,
-    )
-    machine.update_position(
-        x=1.1,
-        y=0.0,
-        z=-1.0,
-        vz=0.0,
-        valid=True,
-        now_s=1.3,
-    )
-    machine.update_attitude(tilt_rad=0.0, valid=True, now_s=1.3)
-    actions = machine.step(1.3)
-    assert machine.phase == FlightPhase.ABORT
-    assert machine.abort_reason == 'horizontal_geofence'
-    assert FlightAction.REQUEST_LAND in actions
-
-
 @pytest.mark.parametrize(
     'telemetry, expected_reason',
     [
         ({}, ''),
+        ({'z': -60.0}, ''),
+        ({'z': -0.1}, ''),
+        ({'z': 2.0}, ''),
         ({'failsafe': True}, 'px4_failsafe'),
-        ({'z': -5.0}, 'altitude_geofence'),
         ({'tilt_rad': math.radians(40.0)}, 'excessive_tilt'),
     ],
 )
-def test_disabled_horizontal_fence_preserves_other_checks(
+def test_position_extents_preserve_other_checks(
     telemetry, expected_reason,
 ) -> None:
-    """Crossing 45 m is allowed while unrelated protections remain active."""
-    machine = make_machine(max_horizontal_distance_m=0.0)
+    """Distance and height do not abort HOLD; failsafe and tilt still do."""
+    machine = make_machine(auto_land=False)
     advance_to_takeoff(machine)
     feedback = dict(armed=True, offboard=True, z=-2.0, landed=False)
-    feedback.update(telemetry)
     update_telemetry(machine, 1.3, **feedback)
     machine.step(1.3)
     update_telemetry(machine, 1.8, **feedback)
+    machine.step(1.8)
+    assert machine.phase == FlightPhase.HOLD
+    feedback.update(telemetry)
+    update_telemetry(machine, 1.9, **feedback)
     machine.update_position(
         x=60.0, y=10.0, z=feedback['z'], vz=0.0,
-        valid=True, now_s=1.8,
+        valid=True, now_s=1.9,
     )
-    actions = machine.step(1.8)
+    actions = machine.step(1.9)
     assert machine.abort_reason == expected_reason
     if expected_reason:
         assert machine.phase == FlightPhase.ABORT
@@ -346,13 +324,6 @@ def test_disabled_horizontal_fence_preserves_other_checks(
     else:
         assert machine.phase == FlightPhase.HOLD
         assert FlightAction.REQUEST_LAND not in actions
-
-
-@pytest.mark.parametrize('distance', [-1.0, math.nan, math.inf])
-def test_horizontal_fence_rejects_invalid_configuration(distance) -> None:
-    """Disabling the fence does not require non-finite configuration."""
-    with pytest.raises(ValueError, match='max_horizontal_distance_m'):
-        make_machine(max_horizontal_distance_m=distance)
 
 
 def test_external_sequence_can_request_land_from_hold() -> None:

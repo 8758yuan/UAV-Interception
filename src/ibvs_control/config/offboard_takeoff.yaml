@@ -40,10 +40,6 @@ offboard_takeoff:
     # 起飞完成判据：高度误差(m)和垂直速度(m/s)。
     altitude_tolerance_m: 0.15
     vertical_speed_tolerance_m_s: 0.30
-    # 安全围栏：最大水平距离(m)、最高/最低相对高度(m)。
-    max_horizontal_distance_m: 3.0
-    max_relative_altitude_m: 4.0
-    min_hold_altitude_m: 0.5
     # 最大机体倾角(deg)，超过后请求降落。
     max_tilt_deg: 35.0
 

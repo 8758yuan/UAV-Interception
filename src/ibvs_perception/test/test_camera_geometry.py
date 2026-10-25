@@ -47,10 +47,10 @@ def test_feature_low_pass_rejects_frame_rate_dependent_tuning() -> None:
 
 
 def test_feature_release_enforces_capture_to_publish_delay() -> None:
-    assert delayed_release_ns(1_000_000_000, 1_010_000_000, 0.08) == (
-        1_080_000_000
+    assert delayed_release_ns(1_000_000_000, 1_010_000_000, 0.07) == (
+        1_070_000_000
     )
-    # If processing itself already exceeded 80 ms, do not add a second delay.
-    assert delayed_release_ns(1_000_000_000, 1_090_000_000, 0.08) == (
+    # If processing itself already exceeded 70 ms, do not add a second delay.
+    assert delayed_release_ns(1_000_000_000, 1_090_000_000, 0.07) == (
         1_090_000_000
     )

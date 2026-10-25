@@ -72,7 +72,6 @@ def generate_launch_description() -> LaunchDescription:
     record_bag = LaunchConfiguration('record_bag')
     speed_limit = LaunchConfiguration('speed_limit_m_s')
     tilt_limit = LaunchConfiguration('interception_tilt_limit_deg')
-    horizontal_limit = LaunchConfiguration('max_horizontal_distance_m')
     coordinator = Node(
         package='ibvs_control',
         executable='vision_interception_coordinator',
@@ -93,10 +92,6 @@ def generate_launch_description() -> LaunchDescription:
                 ),
                 'interception_tilt_limit_deg': ParameterValue(
                     tilt_limit,
-                    value_type=float,
-                ),
-                'max_horizontal_distance_m': ParameterValue(
-                    horizontal_limit,
                     value_type=float,
                 ),
             },
@@ -175,11 +170,6 @@ def generate_launch_description() -> LaunchDescription:
                 'interception_tilt_limit_deg',
                 default_value='55.0',
                 description='拦截阶段最大倾角，单位deg',
-            ),
-            DeclareLaunchArgument(
-                'max_horizontal_distance_m',
-                default_value='0.0',
-                description='相对起飞点的最大水平距离，单位m，0表示关闭',
             ),
             OpaqueFunction(function=_prepare_directories),
             shutdown,

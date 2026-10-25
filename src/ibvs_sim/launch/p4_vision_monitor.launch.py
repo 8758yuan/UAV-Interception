@@ -120,9 +120,8 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 'vehicle_model_name', default_value='x500_mono_cam_0'
             ),
-            # Paper flight experiments report about 80 ms total imaging and
-            # processing delay.  This makes SITL exercise the same DKF path.
-            DeclareLaunchArgument('image_delay_s', default_value='0.08'),
+            # SITL capture-to-publication delay is configured to 70 ms.
+            DeclareLaunchArgument('image_delay_s', default_value='0.07'),
             DeclareLaunchArgument(
                 'model_path',
                 default_value=os.path.join(
