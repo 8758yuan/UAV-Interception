@@ -92,7 +92,7 @@ def test_moving_target_is_confined_to_gazebo_set_pose() -> None:
     assert "set_pose_service = f'/world/{world_name}/set_pose'" in mover
     assert 'Odometry' not in mover
     assert 'Publisher' not in mover
-    assert "default_value='figure8'" in launch
+    assert "default_value='circle'" in launch
     assert "default_value='5.0'" in launch
 
 

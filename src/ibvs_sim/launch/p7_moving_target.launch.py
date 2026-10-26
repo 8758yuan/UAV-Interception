@@ -54,6 +54,9 @@ def generate_launch_description() -> LaunchDescription:
             'speed_m_s': ParameterValue(target_speed, value_type=float),
             'radius_x_m': ParameterValue(radius_x, value_type=float),
             'radius_y_m': ParameterValue(radius_y, value_type=float),
+            'tilt_deg': ParameterValue(
+                LaunchConfiguration('target_tilt_deg'), value_type=float
+            ),
             'update_rate_hz': 100.0,
             'start_on_observer_reset': False,
         }],
@@ -62,14 +65,12 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('world', default_value='default'),
         DeclareLaunchArgument('target_x', default_value='12.0'),
         DeclareLaunchArgument('target_y', default_value='0.0'),
-        # Keep the nominal moving-target centre on the initial search plane;
-        # other heights are handled by visual acquisition.
         DeclareLaunchArgument('target_z', default_value='4.0'),
-        DeclareLaunchArgument('target_pattern', default_value='figure8'),
-        # Paper HITL evaluates the figure-eight at 5, 7.5, and 10 m/s.
+        DeclareLaunchArgument('target_pattern', default_value='circle'),
+        DeclareLaunchArgument('target_tilt_deg', default_value='45.0'),
         DeclareLaunchArgument('target_speed_m_s', default_value='5.0'),
-        DeclareLaunchArgument('figure8_radius_x_m', default_value='10.0'),
-        DeclareLaunchArgument('figure8_radius_y_m', default_value='5.0'),
+        DeclareLaunchArgument('figure8_radius_x_m', default_value='6.0'),
+        DeclareLaunchArgument('figure8_radius_y_m', default_value='6.0'),
         DeclareLaunchArgument('device', default_value=''),
         DeclareLaunchArgument(
             'vehicle_model_name', default_value='x500_mono_cam_0'

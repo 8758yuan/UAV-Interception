@@ -34,6 +34,7 @@ setup(
             'offline_interception = ibvs_control.offline_interception:main',
             'paper_state_observer = '
             'ibvs_control.paper_state_observer_node:main',
+            'dkf_evaluation = ibvs_control.dkf_evaluation_node:main',
             'p1_acceptance = ibvs_control.p1_trial_report:main',
             'px4_command_adapter = '
             'ibvs_control.px4_command_adapter_node:main',

@@ -5,6 +5,7 @@ from typing import Optional
 
 from interception_interfaces.msg import (
     ObserverBootstrap,
+    ObserverEvaluation,
     ObserverState,
     VisionFeature,
 )
@@ -115,6 +116,9 @@ class PaperStateObserverNode(Node):
             ObserverState,
             str(self.get_parameter('state_topic').value),
             10,
+        )
+        self.evaluation_publisher = self.create_publisher(
+            ObserverEvaluation, '/interception/observer/evaluation', 10
         )
         self.create_subscription(
             SensorCombined,
@@ -476,6 +480,11 @@ class PaperStateObserverNode(Node):
         message.valid = valid
         message.reason = reason
         self.publisher.publish(message)
+        if self.evaluation_publisher.get_subscription_count():
+            evaluation = ObserverEvaluation()
+            evaluation.state = message
+            evaluation.imu_timestamp_us = self.last_imu_timestamp_us or 0
+            self.evaluation_publisher.publish(evaluation)
         if valid:
             self.last_error = ''
 
@@ -487,6 +496,11 @@ class PaperStateObserverNode(Node):
         message.valid = False
         message.reason = reason
         self.publisher.publish(message)
+        if self.evaluation_publisher.get_subscription_count():
+            evaluation = ObserverEvaluation()
+            evaluation.state = message
+            evaluation.imu_timestamp_us = self.last_imu_timestamp_us or 0
+            self.evaluation_publisher.publish(evaluation)
 
     def _log_error_once(self, reason: str) -> None:
         if reason != self.last_error:

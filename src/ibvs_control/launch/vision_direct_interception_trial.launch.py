@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 import shutil
 
+import yaml
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -30,6 +32,8 @@ def _prepare_directories(context) -> list:
     results = Path(
         LaunchConfiguration('results_directory').perform(context)
     ).expanduser().resolve()
+    if (results / 'dkf' / trial_id).exists():
+        raise FileExistsError(f'trial DKF results already exist: {trial_id}')
     if (results / 'bags' / trial_id).exists():
         raise FileExistsError(f'trial bag already exists: {trial_id}')
     (results / 'trials').mkdir(parents=True, exist_ok=True)
@@ -104,6 +108,23 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         parameters=[observer_config, paper_design_config],
     )
+    with open(observer_config, encoding='utf-8') as stream:
+        observer_parameters = yaml.safe_load(stream)['paper_state_observer']['ros__parameters']
+    evaluation = Node(
+        package='ibvs_control',
+        executable='dkf_evaluation',
+        name='dkf_evaluation',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+            'world_name': LaunchConfiguration('world'),
+            'vehicle_model': LaunchConfiguration('vehicle_model_name'),
+            'output_directory': PathJoinSubstitution([results, 'dkf']),
+            'run_id': trial_id,
+            'camera_to_body_rotation': observer_parameters['camera_to_body_rotation'],
+            'camera_position_b_m': observer_parameters['camera_position_b_m'],
+        }],
+    )
     bag = ExecuteProcess(
         cmd=[
             'ros2', 'bag', 'record', '-o',
@@ -114,6 +135,8 @@ def generate_launch_description() -> LaunchDescription:
             '/camera/camera_info',
             '/interception/vision/raw_feature',
             '/interception/observer/state',
+            '/interception/observer/evaluation',
+            '/fmu/out/timesync_status',
             '/interception/observer/bootstrap',
             '/interception/observer/reset',
             '/interception/control/debug',
@@ -148,6 +171,10 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             DeclareLaunchArgument('trial_id', default_value='p4_vision_01'),
+            DeclareLaunchArgument('world', default_value='default'),
+            DeclareLaunchArgument(
+                'vehicle_model_name', default_value='x500_mono_cam_0'
+            ),
             DeclareLaunchArgument(
                 'results_directory', default_value=default_results
             ),
@@ -174,6 +201,7 @@ def generate_launch_description() -> LaunchDescription:
             OpaqueFunction(function=_prepare_directories),
             shutdown,
             bag,
+            evaluation,
             observer,
             coordinator,
         ]

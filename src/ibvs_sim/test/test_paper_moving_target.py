@@ -71,3 +71,24 @@ def test_invalid_moving_target_configuration_is_rejected() -> None:
             radius_x_m=4.0,
             radius_y_m=2.0,
         )
+
+
+def test_tilted_circle_radius_speed_and_direction() -> None:
+    trajectory = PaperTargetTrajectory(
+        pattern='circle', origin=(12.0, 0.0, 4.0), speed_m_s=5.0,
+        radius_x_m=6.0, radius_y_m=6.0, tilt_deg=45.0,
+    )
+    offset = 6.0 / math.sqrt(2.0)
+    centre = (12.0 - offset, 0.0, 4.0 - offset)
+    period = trajectory.path_length_m / trajectory.speed_m_s
+    for fraction in (0.0, 0.125, 0.25, 0.5, 0.75, 1.0):
+        sample = trajectory.sample(fraction * period)
+        x, _, z = sample.position
+        assert math.dist(sample.position, centre) == pytest.approx(6.0)
+        assert z - 4.0 == pytest.approx(x - 12.0)
+        assert math.hypot(*sample.velocity) == pytest.approx(5.0)
+    assert trajectory.sample(0.0).position == pytest.approx((12.0, 0.0, 4.0))
+    assert trajectory.sample(period).position == pytest.approx((12.0, 0.0, 4.0))
+    assert trajectory.sample(0.5 * period).position[2] == pytest.approx(
+        4.0 - 2.0 * offset,
+    )

@@ -33,10 +33,11 @@ class PaperTargetTrajectory:
         radius_x_m: float,
         radius_y_m: float,
         samples: int = 8192,
+        tilt_deg: float = 0.0,
     ) -> None:
         if pattern not in ('figure8', 'circle'):
             raise ValueError("pattern must be 'figure8' or 'circle'")
-        values = (*origin, speed_m_s, radius_x_m, radius_y_m)
+        values = (*origin, speed_m_s, radius_x_m, radius_y_m, tilt_deg)
         if not all(math.isfinite(value) for value in values):
             raise ValueError('trajectory parameters must be finite')
         if speed_m_s <= 0.0 or radius_x_m <= 0.0 or radius_y_m <= 0.0:
@@ -48,13 +49,14 @@ class PaperTargetTrajectory:
         self.speed_m_s = float(speed_m_s)
         self.radius_x_m = float(radius_x_m)
         self.radius_y_m = float(radius_y_m)
+        self._tilt_rad = math.radians(tilt_deg)
         self._samples = int(samples)
         self._theta_step = 2.0 * math.pi / self._samples
         self._arc_lengths = self._build_arc_length_table()
         self.path_length_m = self._arc_lengths[-1]
 
     def sample(self, elapsed_s: float) -> TrajectorySample:
-        """Return a sample whose planar speed equals the configured speed."""
+        """Return a sample whose spatial speed equals the configured speed."""
         if not math.isfinite(elapsed_s) or elapsed_s < 0.0:
             raise ValueError('elapsed_s must be finite and nonnegative')
         distance = math.fmod(
@@ -77,11 +79,17 @@ class PaperTargetTrajectory:
         derivative_norm = math.hypot(derivative_x, derivative_y)
         velocity_x = self.speed_m_s * derivative_x / derivative_norm
         velocity_y = self.speed_m_s * derivative_y / derivative_norm
+        cos_tilt = math.cos(self._tilt_rad)
+        sin_tilt = math.sin(self._tilt_rad)
         origin_x, origin_y, origin_z = self.origin
         return TrajectorySample(
-            position=(origin_x + local_x, origin_y + local_y, origin_z),
-            velocity=(velocity_x, velocity_y, 0.0),
-            yaw_rad=math.atan2(velocity_y, velocity_x),
+            position=(
+                origin_x + local_x * cos_tilt,
+                origin_y + local_y,
+                origin_z + local_x * sin_tilt,
+            ),
+            velocity=(velocity_x * cos_tilt, velocity_y, velocity_x * sin_tilt),
+            yaw_rad=math.atan2(velocity_y, velocity_x * cos_tilt),
         )
 
     def _curve(self, theta: float) -> Tuple[float, float]:
@@ -131,13 +139,14 @@ class PaperMovingTarget(Node):
         super().__init__('paper_moving_target')
         self.declare_parameter('world_name', 'default')
         self.declare_parameter('model_name', 'ibvs_target')
-        self.declare_parameter('pattern', 'figure8')
+        self.declare_parameter('pattern', 'circle')
         self.declare_parameter('origin_x_m', 12.0)
         self.declare_parameter('origin_y_m', 0.0)
         self.declare_parameter('origin_z_m', 4.0)
         self.declare_parameter('speed_m_s', 5.0)
-        self.declare_parameter('radius_x_m', 10.0)
-        self.declare_parameter('radius_y_m', 5.0)
+        self.declare_parameter('radius_x_m', 6.0)
+        self.declare_parameter('radius_y_m', 6.0)
+        self.declare_parameter('tilt_deg', 45.0)
         self.declare_parameter('update_rate_hz', 100.0)
         self.declare_parameter('start_on_observer_reset', True)
         self.declare_parameter(
@@ -161,6 +170,7 @@ class PaperMovingTarget(Node):
             speed_m_s=float(self.get_parameter('speed_m_s').value),
             radius_x_m=float(self.get_parameter('radius_x_m').value),
             radius_y_m=float(self.get_parameter('radius_y_m').value),
+            tilt_deg=float(self.get_parameter('tilt_deg').value),
         )
         world_name = str(self.get_parameter('world_name').value)
         self.model_name = str(self.get_parameter('model_name').value)
