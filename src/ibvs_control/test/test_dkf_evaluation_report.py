@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 from ibvs_control.dkf_evaluation import STATE_NAMES
-from ibvs_control.dkf_evaluation_report import STATE_COLUMNS, read_samples, snapshot_rows
+from ibvs_control.dkf_evaluation_report import STATE_GROUPS, read_samples, snapshot_rows
 
 
 def write_fixture(directory):
@@ -46,12 +46,28 @@ def test_half_second_selects_real_samples_and_retains_missing_values(tmp_path):
     assert samples[1]['_elapsed_ns'] == 490_000_000
     assert samples[3] is None
     output = list(snapshot_rows(samples))
-    assert output[1][:2] == ['0.5', '0.490']
-    position_index = 2 + 3 * [name for name, _, _ in STATE_COLUMNS].index('p_r_e')
-    assert output[1][position_index:position_index + 3] == ['1.000', '1.250', '0.250']
-    assert len(output[1]) == 2 + 18 * 3
+    assert output[1][:2] == ['0.500', '0.490']
+    position_index = 2 + 3 * [key for key, _, _, _ in STATE_GROUPS].index('position')
+    assert output[1][position_index:position_index + 3] == [
+        '(1.000, 1.000, 1.000)', '(1.250, 1.250, 1.250)', '(0.250, 0.250, 0.250)']
+    assert output[1][2] == '(1.000, 1.000, 1.000, 1.000)'
+    assert output[1][11] == '(1.000, 1.000)'
+    assert len(output[1]) == 2 + 6 * 3
     assert output[3][-3:] == ['不可用'] * 3
-    assert output[0][-3:] == ['不可用', '0.250', '不可用']
+    assert output[0][-3:] == ['不可用', '(0.250, 0.250, 0.250)', '不可用']
+
+
+def test_grouped_values_keep_component_order_and_three_decimal_places():
+    sample = {'_elapsed_ns': 0}
+    for _, _, _, states in STATE_GROUPS:
+        for index, (name, _) in enumerate(states):
+            for kind in ('true', 'estimate', 'error'):
+                sample[f'{name}_{kind}'] = (1.23456, -2.34567, 0.00001, 4.56789)[index]
+    sample['image_y_true'] = 'nan'
+    row = next(snapshot_rows({0: sample}))
+    assert row[2] == '(1.235, -2.346, 0.000, 4.568)'
+    assert row[5] == '(1.235, -2.346, 0.000)'
+    assert row[11] == '(1.235, 不可用)'
 
 
 def test_report_is_self_contained_and_leaves_raw_recording_unchanged(tmp_path):
@@ -82,19 +98,23 @@ def test_report_is_self_contained_and_leaves_raw_recording_unchanged(tmp_path):
         summary = ET.fromstring(archive.read('xl/worksheets/sheet2.xml'))
     data_rows = sheet.findall('s:sheetData/s:row', ns)[2:]
     assert len(data_rows) == 5
-    assert all(len(row) == 2 + 18 * 3 for row in data_rows)
+    assert all(len(row) == 2 + 6 * 3 for row in data_rows)
     cells = {cell.attrib['r']: cell for row in data_rows for cell in row}
     assert cells['A4'].find('s:v', ns).text == '0.5'
     assert abs(float(cells['B4'].find('s:v', ns).text) - .49) < 1e-12
-    assert float(cells['O4'].find('s:v', ns).text) == 1.
-    assert cells['BD3'].find('s:is/s:t', ns).text == '不可用'
-    assert cells['BC3'].find('s:v', ns) is not None  # Bias estimate stays numeric.
+    assert cells['F4'].find('s:is/s:t', ns).text == '(1.000, 1.000, 1.000)'
+    assert cells['T3'].find('s:is/s:t', ns).text == '不可用'
+    assert cells['S3'].find('s:is/s:t', ns).text == '(0.250, 0.250, 0.250)'
+    # HTML and Excel present exactly the same grouped values.
+    for row in data_rows:
+        for cell in list(row)[2:]:
+            assert cell.find('s:is/s:t', ns).text in page
     assert all(cell.find('s:is/s:t', ns).text == '不可用'
                for cell in list(data_rows[3])[2:])
     pane = sheet.find('s:sheetViews/s:sheetView/s:pane', ns)
     assert pane.attrib['topLeftCell'] == 'C3'
     assert pane.attrib['xSplit'] == pane.attrib['ySplit'] == '2'
-    assert len(sheet.findall('s:mergeCells/s:mergeCell', ns)) == 20
+    assert len(sheet.findall('s:mergeCells/s:mergeCell', ns)) == 8
     assert len(summary.findall('s:sheetData/s:row', ns)) == 20
 
 
@@ -120,17 +140,17 @@ try {
   const assert = (condition, message) => { if(!condition) throw new Error(message); };
   const visible = selector => document.querySelectorAll('#snapshot-table ' + selector + ':not([hidden])').length;
   const firstRow = document.querySelector('#snapshot-table tbody tr');
-  assert(firstRow.children.length === 56, 'all 18 states remain in each row');
-  assert(visible('[data-state-heading]') === 6, 'default position and velocity');
+  assert(firstRow.children.length === 20, 'all six state groups remain in each row');
+  assert(visible('[data-state-heading]') === 2, 'default position and velocity');
   snapshotMode.value = 'error';
   snapshotMode.dispatchEvent(new Event('change'));
-  assert(visible('tbody tr:first-child [data-kind]') === 6, 'error-only columns');
+  assert(visible('tbody tr:first-child [data-kind]') === 2, 'error-only columns');
   assert([...document.querySelectorAll('[data-state-heading]')].every(h => h.colSpan === 1), 'error header spans');
   document.getElementById('show-all-states').click();
-  assert(visible('[data-state-heading]') === 18, 'show all state groups');
+  assert(visible('[data-state-heading]') === 6, 'show all state groups');
   snapshotMode.value = 'all';
   snapshotMode.dispatchEvent(new Event('change'));
-  assert(visible('tbody tr:first-child [data-kind]') === 54, 'all state triplets');
+  assert(visible('tbody tr:first-child [data-kind]') === 18, 'all state triplets');
   const wrap = document.getElementById('snapshot-table');
   const timeCell = firstRow.children[0];
   const actualCell = firstRow.children[1];
@@ -144,12 +164,12 @@ try {
   assert(Math.abs(actualCell.getBoundingClientRect().left - actualX) < 1, 'fixed actual time');
   assert(Math.abs(header.getBoundingClientRect().top - headerY) < 1, 'fixed header');
   document.getElementById('show-main-states').click();
-  assert(visible('[data-state-heading]') === 6, 'restore main states');
+  assert(visible('[data-state-heading]') === 2, 'restore main states');
   const velocity = document.querySelector('input[value="velocity"]');
   velocity.checked = false;
   velocity.dispatchEvent(new Event('change'));
-  assert(visible('[data-state-heading]') === 3, 'individual checkbox');
-  assert(firstRow.children.length === 56, 'data retained after filtering');
+  assert(visible('[data-state-heading]') === 1, 'individual checkbox');
+  assert(firstRow.children.length === 20, 'data retained after filtering');
   result.textContent = 'passed';
 } catch(error) { result.textContent = error.message; }
 document.body.appendChild(result);
@@ -157,7 +177,7 @@ document.body.appendChild(result);
     # Enough rows for both horizontal and vertical scrolling.
     page = ('<!doctype html><meta charset="utf-8"><style>' + css + '</style><main>'
             '<select id="group"></select>' + snapshot_controls()
-            + snapshot_table([['0.0', '0.000'] + ['1.000'] * 54] * 30)
+            + snapshot_table([['0.000', '0.000'] + ['(1.000, 2.000, 3.000)'] * 18] * 30)
             + '</main><script>' + script + check + '</script>')
     path = tmp_path / 'browser.html'
     path.write_text(page)
@@ -179,7 +199,7 @@ def test_event_boundaries_are_present_even_between_dkf_samples(tmp_path):
     rows, samples, origin = read_samples(directory)
     snapshots = list(snapshot_rows(samples))
     assert origin == 9_900_000_000
-    assert snapshots[0][:2] == ['0.0', '0.100']
+    assert snapshots[0][:2] == ['0.000', '0.100']
     assert snapshots[-1][:2] == ['2.330', '2.100']
     assert snapshots[-1][2:] == list(snapshot_rows({0: rows[-1]}))[0][2:]
-    assert [row[0] for row in snapshots] == ['0.0', '0.5', '1.0', '1.5', '2.0', '2.330']
+    assert [row[0] for row in snapshots] == ['0.000', '0.500', '1.000', '1.500', '2.000', '2.330']

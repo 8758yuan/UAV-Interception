@@ -192,7 +192,7 @@ def test_only_active_interval_is_recorded_including_both_endpoints(tmp_path):
     _, samples, origin = read_samples(directory)
     snapshots = list(snapshot_rows(samples))
     assert origin == 1_000_000_000
-    assert [row[0] for row in snapshots] == ['0.0', '0.5', '1.0', '1.230']
+    assert [row[0] for row in snapshots] == ['0.000', '0.500', '1.000', '1.230']
     assert snapshots[-1][1] == '1.230'
     metrics = list(csv.DictReader((directory / 'metrics.csv').open()))
     assert metrics[0]['count'] == '4'

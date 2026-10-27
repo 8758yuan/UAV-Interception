@@ -38,8 +38,6 @@ def display(value):
     number = float(value)
     if not math.isfinite(number):
         return '不可用'
-    if number and abs(number) < 0.0005:
-        return f'{number:.2e}'
     return f'{number:.3f}'
 
 
@@ -77,23 +75,28 @@ def read_samples(directory):
 
 
 # Match the observer's q, p_r, v_r, image, gyro-bias, accel-bias order.
+STATE_GROUPS = tuple(
+    group
+    for group_key in ('attitude', 'position', 'velocity', 'image', 'gyro', 'accel')
+    for group in GROUPS if group[0] == group_key
+)
 STATE_COLUMNS = tuple(
     (name, label, unit)
-    for group_key in ('attitude', 'position', 'velocity', 'image', 'gyro', 'accel')
-    for key, _, unit, states in GROUPS if key == group_key
+    for _, _, unit, states in STATE_GROUPS
     for name, label in states
 )
 
 
 def snapshot_rows(samples):
-    """One physical sample per row, containing all 18 original state pairs."""
+    """One physical sample per row, with each state's components in one cell."""
     for index, sample in samples.items():
-        row = [f'{index * 0.5:.1f}' if float(index).is_integer() else f'{index * 0.5:.3f}',
+        row = [f'{index * 0.5:.3f}',
                f'{sample["_elapsed_ns"] * 1e-9:.3f}' if sample else '不可用']
-        for name, _, _ in STATE_COLUMNS:
-            row.extend([display(sample[f'{name}_{kind}'])
-                        for kind in ('true', 'estimate', 'error')]
-                       if sample else ['不可用'] * 3)
+        for _, _, _, states in STATE_GROUPS:
+            for kind in ('true', 'estimate', 'error'):
+                values = [display(sample[f'{name}_{kind}']) for name, _ in states] if sample else []
+                row.append('(' + ', '.join(values) + ')'
+                           if any(value != '不可用' for value in values) else '不可用')
         yield row
 
 
@@ -112,11 +115,12 @@ def write_excel(directory, samples, metrics):
         value = float(value)
         return value if math.isfinite(value) else '不可用'
 
-    def worksheet(rows, freeze, merges=()):
+    def worksheet(rows, freeze, merges=(), width=16):
         xml = [f'<worksheet xmlns="{ns}"><sheetViews><sheetView workbookViewId="0">'
                f'<pane {freeze} state="frozen"/></sheetView></sheetViews>'
                '<sheetFormatPr defaultRowHeight="24"/><cols>'
-               f'<col min="1" max="{max(map(len, rows))}" width="16" customWidth="1"/>'
+               '<col min="1" max="2" width="16" customWidth="1"/>'
+               f'<col min="3" max="{max(map(len, rows))}" width="{width}" customWidth="1"/>'
                '</cols><sheetData>']
         for i, values in enumerate(rows, 1):
             header = i <= 2
@@ -125,8 +129,6 @@ def write_excel(directory, samples, metrics):
                 style = 1 if header else (2 if i % 2 == 0 else 0)
                 reference = f'{column(j)}{i}'
                 if isinstance(value, (int, float)):
-                    if value and abs(value) < 0.0005:
-                        style = 4 if i % 2 == 0 else 3
                     xml.append(f'<c r="{reference}" s="{style}"><v>{value}</v></c>')
                 else:
                     xml.append(f'<c r="{reference}" s="{style}" t="inlineStr">'
@@ -143,18 +145,14 @@ def write_excel(directory, samples, metrics):
     top = ['时间（秒）', '实际取样（秒）']
     second = ['', '']
     merges = ['A1:A2', 'B1:B2']
-    for i, (_, label, unit) in enumerate(STATE_COLUMNS):
+    for i, (_, label, unit, _) in enumerate(STATE_GROUPS):
         top.extend([f'{label}（{unit}）', '', ''])
         second.extend(['真实值', 'DKF估计值', '误差'])
         merges.append(f'{column(3 + i * 3)}1:{column(5 + i * 3)}1')
     comparisons = [top, second]
-    for index, sample in samples.items():
-        values = [index * 0.5, sample['_elapsed_ns'] * 1e-9 if sample else '不可用']
-        for name, _, _ in STATE_COLUMNS:
-            values.extend([number(sample[f'{name}_{kind}'])
-                           for kind in ('true', 'estimate', 'error')]
-                          if sample else ['不可用'] * 3)
-        comparisons.append(values)
+    for (index, sample), row in zip(samples.items(), snapshot_rows(samples)):
+        comparisons.append([index * 0.5,
+                            sample['_elapsed_ns'] * 1e-9 if sample else '不可用', *row[2:]])
     summary = [
         ['DKF 误差汇总（全频率统计；速度真值为差分近似，偏置真值不可用）'],
         ['状态', '单位', '平均绝对误差', '最大绝对误差', '均方根误差', '有效比较次数'],
@@ -166,8 +164,7 @@ def write_excel(directory, samples, metrics):
     relationships = 'http://schemas.openxmlformats.org/package/2006/relationships'
     document_rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
     styles = f'<styleSheet xmlns="{ns}">'
-    styles += ('<numFmts count="2"><numFmt numFmtId="164" formatCode="0.000"/>'
-               '<numFmt numFmtId="165" formatCode="0.00E+00"/></numFmts>'
+    styles += ('<numFmts count="1"><numFmt numFmtId="164" formatCode="0.000"/></numFmts>'
                '<fonts count="2"><font><sz val="11"/><name val="Microsoft YaHei"/></font>'
                '<font><b/><sz val="11"/><name val="Microsoft YaHei"/></font></fonts>'
                '<fills count="4"><fill><patternFill patternType="none"/></fill>'
@@ -176,9 +173,8 @@ def write_excel(directory, samples, metrics):
                '<fill><patternFill patternType="solid"><fgColor rgb="FFF2F6F8"/></patternFill></fill>'
                '</fills><borders count="1"><border/></borders>'
                '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-               '<cellXfs count="5">')
-    for num_format, font, fill in ((164, 0, 0), (0, 1, 2), (164, 0, 3),
-                                   (165, 0, 0), (165, 0, 3)):
+               '<cellXfs count="3">')
+    for num_format, font, fill in ((164, 0, 0), (0, 1, 2), (164, 0, 3)):
         styles += (f'<xf numFmtId="{num_format}" fontId="{font}" fillId="{fill}" '
                    'borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1">'
                    '<alignment horizontal="center" vertical="center" wrapText="1"/></xf>')
@@ -204,7 +200,7 @@ def write_excel(directory, samples, metrics):
                         + f'<Relationship Id="rId3" Type="{document_rel}/styles" Target="styles.xml"/></Relationships>')
         archive.writestr('xl/styles.xml', styles)
         archive.writestr('xl/worksheets/sheet1.xml', worksheet(
-            comparisons, 'xSplit="2" ySplit="2" topLeftCell="C3" activePane="bottomRight"', merges))
+            comparisons, 'xSplit="2" ySplit="2" topLeftCell="C3" activePane="bottomRight"', merges, width=44))
         archive.writestr('xl/worksheets/sheet2.xml', worksheet(
             summary, 'ySplit="2" topLeftCell="A3" activePane="bottomLeft"', ['A1:F1']))
     return path
@@ -212,13 +208,11 @@ def write_excel(directory, samples, metrics):
 
 def snapshot_table(rows):
     """Retain every state cell; filter only the report's visible columns."""
-    group_for = {name: key for key, _, _, states in GROUPS for name, _ in states}
     head = ('<tr><th class="time-nominal" rowspan="2">时间（秒）</th>'
             '<th class="time-actual" rowspan="2">实际取样（秒）</th>')
     subhead = []
     columns = []
-    for name, label, unit in STATE_COLUMNS:
-        group = group_for[name]
+    for group, label, unit, _ in STATE_GROUPS:
         attrs = f'data-state-group="{group}"'
         hidden = '' if group in ('position', 'velocity') else ' hidden'
         head += (f'<th {attrs} data-state-heading colspan="3"{hidden}>'
@@ -254,7 +248,7 @@ def snapshot_controls():
         '<label>显示内容：<select id="snapshot-mode">'
         '<option value="all">真实值＋估计值＋误差</option>'
         '<option value="error">只看误差</option></select></label></div>'
-        '<p id="snapshot-status" aria-live="polite">当前显示 6 / 18 个状态</p></div>'
+        '<p id="snapshot-status" aria-live="polite">当前显示 2 / 6 组状态</p></div>'
     )
 
 
@@ -373,6 +367,8 @@ svg{width:100%;height:auto}a{color:#176c90}[hidden]{display:none}
     page += '<h2 id="snapshots">2. 每隔 0.5 秒的数据对比</h2>'
     page += '<p>每行仍包含同一时刻的全部 18 个状态，勾选只改变显示。默认看位置和速度；'
     page += '需要快速比较时，可切换“只看误差”。时间列和表头固定，向右滚动可查看其余列。</p>'
+    page += '<p>每组变量合并为括号内的一列，数值保留三位小数。分量顺序：四元数 (w, x, y, z)，'
+    page += '位置和速度 (东, 北, 上)，图像坐标 (x, y)，IMU 偏置 (前, 左, 上)。</p>'
     page += snapshot_controls() + snapshot_table(snapshots)
     page += '<h2>3. 对比曲线</h2><label>选择要看的状态： <select id="group">' + options + '</select></label>'
     if metadata.get('recording_start_time_ns') is not None:
@@ -410,7 +406,7 @@ function updateSnapshotColumns(){
   });
   const visibleStates = document.querySelectorAll('#snapshot-table [data-state-heading]:not([hidden])').length;
   document.getElementById('snapshot-status').textContent =
-    `当前显示 ${visibleStates} / 18 个状态 · ${errorsOnly ? '只看误差' : '真实值＋估计值＋误差'}`;
+    `当前显示 ${visibleStates} / 6 组状态 · ${errorsOnly ? '只看误差' : '真实值＋估计值＋误差'}`;
 }
 stateChecks.forEach(input => input.addEventListener('change', updateSnapshotColumns));
 snapshotMode.addEventListener('change', updateSnapshotColumns);
