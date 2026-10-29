@@ -1,0 +1,29 @@
+paper_state_observer:
+  ros__parameters:
+    # 由单目图像构造初始相对位置p_r(0)时使用的光轴深度(m)。
+    # 这是本项目的工程初始化参数；论文仅假设完整x(0)已知。
+    initial_camera_depth_m: 25.0
+    # 以下是论文x(0)中的初始相对速度与IMU偏置。
+    initial_v_r_e: [0.0, 0.0, 0.0]
+    initial_b_gyr_b: [0.0, 0.0, 0.0]
+    initial_b_acc_b: [0.0, 0.0, 0.0]
+
+    # 初始协方差P(0)的标准差形式；越大表示越不相信初始先验。
+    initial_q_std: 0.005
+    initial_position_std_m: 0.6
+    initial_velocity_std_m_s: 0.6
+    initial_image_std: 0.02
+    initial_gyro_bias_std_rad_s: 0.005
+    initial_accel_bias_std_m_s2: 0.05
+
+    # 过程噪声Q的标准差形式；增大后跟踪更灵敏，但估计更抖动。
+    gyro_noise_std_rad_s: 0.015
+    accel_noise_std_m_s2: 0.5
+
+    # 图像测量噪声R的标准差形式；增大后更少相信视觉测量。
+    image_noise_std: 0.015
+
+    # 论文延迟周期D及DKF频率。应满足D≈图像总延迟×DKF频率。
+    # 保持50 Hz、D=4（补偿80 ms）；图像延迟70 ms，与补偿相差10 ms。
+    dkf_delay_steps: 4
+    dkf_update_rate_hz: 50.0

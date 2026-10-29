@@ -1,0 +1,634 @@
+"""Verification of the paper-aligned delayed 18-state observer."""
+
+import math
+
+import numpy as np
+import pytest
+
+from ibvs_control.paper_state_observer import (
+    ACCEL_BIAS_SLICE,
+    GYRO_BIAS_SLICE,
+    IMAGE_SLICE,
+    P_R_SLICE,
+    Q_SLICE,
+    STATE_DIM,
+    V_R_SLICE,
+    InterceptionState18,
+    ObserverConfig,
+    PaperStateObserver,
+    _appendix_delta_quaternion_matrix,
+    _appendix_image_state_jacobian,
+    _quaternion_to_rotation,
+    _rotation_derivatives,
+)
+from rotation_helpers import rodrigues
+
+
+GRAVITY = 9.80665
+
+
+def _initialized_observer(
+    image_xy=(0.0, 0.0),
+    depth_m=12.0,
+) -> PaperStateObserver:
+    observer = PaperStateObserver()
+    observer.initialize_from_image(
+        (1.0, 0.0, 0.0, 0.0),
+        image_xy,
+        depth_m,
+    )
+    return observer
+
+
+def test_state_layout_is_exactly_the_paper_18_vector() -> None:
+    state = InterceptionState18(
+        q=(1.0, 0.0, 0.0, 0.0),
+        p_r_e=(-12.0, 1.0, 2.0),
+        v_r_e=(0.1, 0.2, 0.3),
+        image_xy=(0.01, -0.02),
+        b_gyr_b=(0.001, 0.002, 0.003),
+        b_acc_b=(0.01, 0.02, 0.03),
+    )
+    vector = state.as_vector()
+    assert vector.shape == (STATE_DIM,)
+    assert vector[Q_SLICE] == pytest.approx(state.q)
+    assert vector[P_R_SLICE] == pytest.approx(state.p_r_e)
+    assert vector[V_R_SLICE] == pytest.approx(state.v_r_e)
+    assert vector[IMAGE_SLICE] == pytest.approx(state.image_xy)
+    assert vector[GYRO_BIAS_SLICE] == pytest.approx(state.b_gyr_b)
+    assert vector[ACCEL_BIAS_SLICE] == pytest.approx(state.b_acc_b)
+    assert InterceptionState18.from_vector(vector) == state
+
+
+def test_image_and_depth_prior_initialize_relative_position() -> None:
+    observer = _initialized_observer(image_xy=(0.1, -0.05), depth_m=10.0)
+    state = observer.snapshot().state
+    # Optical [right, down, forward] maps to FLU [-left, -up, forward].
+    assert state.p_r_e == pytest.approx((-10.0, 1.0, -0.5))
+    assert state.image_xy == pytest.approx((0.1, -0.05))
+    assert np.linalg.norm(state.q) == pytest.approx(1.0)
+
+
+def test_initial_covariance_accepts_relative_and_image_correlations() -> None:
+    observer = PaperStateObserver()
+    factor = np.array(
+        (
+            (1.2, 0.0, 0.0, 0.0, 0.0, 0.0),
+            (0.2, 1.1, 0.0, 0.0, 0.0, 0.0),
+            (-0.1, 0.3, 1.4, 0.0, 0.0, 0.0),
+            (0.15, 0.0, 0.0, 0.4, 0.0, 0.0),
+            (0.0, -0.1, 0.0, 0.05, 0.5, 0.0),
+            (0.0, 0.0, 0.12, 0.0, 0.1, 0.6),
+        )
+    )
+    relative_covariance = factor @ factor.T
+    image_position_covariance = np.array(
+        ((0.005, -0.003, 0.0), (0.0, 0.004, 0.002))
+    )
+    initial = observer.initialize_from_image(
+        (1.0, 0.0, 0.0, 0.0),
+        (0.1, -0.05),
+        10.0,
+        relative_covariance=relative_covariance,
+        image_position_covariance=image_position_covariance,
+    )
+    covariance = initial.covariance
+    assert covariance[4:10, 4:10] == pytest.approx(relative_covariance)
+    assert covariance[IMAGE_SLICE, P_R_SLICE] == pytest.approx(
+        image_position_covariance
+    )
+    assert covariance[P_R_SLICE, IMAGE_SLICE] == pytest.approx(
+        image_position_covariance.T
+    )
+    assert np.linalg.eigvalsh(covariance)[0] >= -1e-12
+
+    # The initial image and position came from shared measurements. A new
+    # image observation must be able to adjust the position through that
+    # covariance, even before the first prediction.
+    before = np.asarray(initial.state.p_r_e)
+    after = observer.correct_image((0.12, -0.04))
+    assert np.linalg.norm(np.asarray(after.state.p_r_e) - before) > 0.0
+
+
+@pytest.mark.parametrize(
+    ('relative_covariance', 'image_position_covariance', 'message'),
+    (
+        (np.eye(5), None, 'relative_covariance'),
+        (np.eye(6) + np.diag((0.1, 0.0, 0.0, 0.0, 0.0), k=1),
+         None, 'relative_covariance'),
+        (np.diag((1.0, 1.0, 1.0, 1.0, 1.0, -1.0)), None,
+         'positive semidefinite'),
+        (np.eye(6), np.ones((2, 3)), 'positive semidefinite'),
+        (np.eye(6), np.array(((math.nan, 0.0, 0.0), (0.0, 0.0, 0.0))),
+         'image_position_covariance'),
+    ),
+)
+def test_invalid_initial_covariance_does_not_replace_state(
+    relative_covariance,
+    image_position_covariance,
+    message,
+) -> None:
+    observer = _initialized_observer()
+    before = observer.snapshot()
+    with pytest.raises(ValueError, match=message):
+        observer.initialize_from_image(
+            (1.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0),
+            15.0,
+            relative_covariance=relative_covariance,
+            image_position_covariance=image_position_covariance,
+        )
+    after = observer.snapshot()
+    assert after.state == before.state
+    assert after.covariance == pytest.approx(before.covariance)
+
+
+def test_stationary_imu_prediction_preserves_mean_and_is_finite() -> None:
+    observer = _initialized_observer()
+    initial = observer.snapshot()
+    result = observer.predict((0.0, 0.0, 0.0), (0.0, 0.0, GRAVITY), 0.01)
+    assert result.state.q == pytest.approx(initial.state.q)
+    assert result.state.p_r_e == pytest.approx(initial.state.p_r_e)
+    assert result.state.v_r_e == pytest.approx((0.0, 0.0, 0.0), abs=1e-12)
+    assert result.state.image_xy == pytest.approx((0.0, 0.0))
+    assert result.prediction_count == 1
+    assert np.all(np.isfinite(result.covariance))
+    assert np.linalg.eigvalsh(result.covariance)[0] >= -1e-12
+
+
+def test_quaternion_recurrence_matches_appendix_c_matrix() -> None:
+    observer = _initialized_observer()
+    omega = np.array((0.1, -0.2, 0.3))
+    dt_s = 0.01
+    expected = _appendix_delta_quaternion_matrix(omega, dt_s) @ np.array(
+        (1.0, 0.0, 0.0, 0.0)
+    )
+    expected /= np.linalg.norm(expected)
+    result = observer.predict(omega, (0.0, 0.0, GRAVITY), dt_s)
+    assert result.state.q == pytest.approx(expected)
+    assert np.linalg.norm(result.state.q) == pytest.approx(1.0)
+
+
+def test_velocity_quaternion_block_matches_equation_49() -> None:
+    q = np.array((0.8, 0.2, -0.3, 0.4), dtype=float)
+    q /= np.linalg.norm(q)
+    acceleration_b = np.array((0.3, -0.8, 1.2))
+    derivatives = _rotation_derivatives(q)
+    analytic = np.column_stack(
+        [derivative @ acceleration_b for derivative in derivatives]
+    )
+    numerical = np.zeros((3, 4))
+    epsilon = 1e-7
+    for index in range(4):
+        delta = np.zeros(4)
+        delta[index] = epsilon
+        numerical[:, index] = (
+            _quaternion_to_rotation(q + delta) @ acceleration_b
+            - _quaternion_to_rotation(q - delta) @ acceleration_b
+        ) / (2.0 * epsilon)
+    assert analytic == pytest.approx(numerical, abs=1e-8)
+
+
+def test_image_state_block_matches_equation_54() -> None:
+    image = np.array((0.2, -0.1))
+    velocity_c = np.array((0.4, -0.2, 1.1))
+    omega_c = np.array((0.03, -0.04, 0.02))
+    depth_m = 8.0
+    dt_s = 0.01
+    jacobian = _appendix_image_state_jacobian(
+        image,
+        velocity_c,
+        omega_c,
+        depth_m,
+        dt_s,
+    )
+
+    def propagate(candidate):
+        x_value, y_value = candidate
+        translation = np.array(
+            (
+                (-1.0 / depth_m, 0.0, x_value / depth_m),
+                (0.0, -1.0 / depth_m, y_value / depth_m),
+            )
+        )
+        rotation = np.array(
+            (
+                (x_value * y_value, -(1.0 + x_value ** 2), y_value),
+                (1.0 + y_value ** 2, -x_value * y_value, -x_value),
+            )
+        )
+        return candidate + (
+            translation @ velocity_c + rotation @ omega_c
+        ) * dt_s
+
+    numerical = np.zeros((2, 2))
+    epsilon = 1e-7
+    for index in range(2):
+        delta = np.zeros(2)
+        delta[index] = epsilon
+        numerical[:, index] = (
+            propagate(image + delta) - propagate(image - delta)
+        ) / (2.0 * epsilon)
+    assert jacobian == pytest.approx(numerical, abs=1e-8)
+
+
+def test_image_position_jacobian_matches_finite_difference() -> None:
+    observer = PaperStateObserver()
+    observer.initialize_from_image(
+        (0.98, 0.02, 0.1, -0.02),
+        (0.13, -0.07),
+        9.0,
+        initial_v_r_e=(0.8, -0.5, 0.2),
+    )
+    state = observer.snapshot().state.as_vector()
+    gyro = np.array((0.03, -0.02, 0.01))
+    accel = np.array((0.0, 0.0, GRAVITY))
+    dt_s = 0.01
+    _, F, _ = observer._appendix_prediction(state, gyro, accel, dt_s)
+    numerical = np.zeros((2, 3))
+    epsilon = 1e-6
+    for index in range(3):
+        offset = np.zeros(STATE_DIM)
+        offset[P_R_SLICE.start + index] = epsilon
+        plus, _, _ = observer._appendix_prediction(
+            state + offset, gyro, accel, dt_s
+        )
+        minus, _, _ = observer._appendix_prediction(
+            state - offset, gyro, accel, dt_s
+        )
+        numerical[:, index] = (
+            plus[IMAGE_SLICE] - minus[IMAGE_SLICE]
+        ) / (2.0 * epsilon)
+    assert np.linalg.norm(F[IMAGE_SLICE, P_R_SLICE]) > 0.0
+    assert F[IMAGE_SLICE, P_R_SLICE] == pytest.approx(
+        numerical, abs=1e-10
+    )
+
+
+def test_current_image_update_reduces_image_uncertainty() -> None:
+    observer = _initialized_observer()
+    observer.predict((0.0, 0.0, 0.0), (0.0, 0.0, GRAVITY), 0.01)
+    before = observer.snapshot()
+    after = observer.correct_image((0.04, -0.03))
+    assert after.state.image_xy[0] > before.state.image_xy[0]
+    assert after.state.image_xy[1] < before.state.image_xy[1]
+    assert after.correction_count == 1
+    assert after.innovation_norm == pytest.approx(0.05)
+    assert np.trace(after.covariance[IMAGE_SLICE, IMAGE_SLICE]) < np.trace(
+        before.covariance[IMAGE_SLICE, IMAGE_SLICE]
+    )
+
+
+@pytest.mark.parametrize('camera_offset', ((0.0, 0.0, 0.0), (0.12, 0.0, 0.2)))
+def test_delayed_update_replays_imu_substeps(camera_offset) -> None:
+    """D counts DKF periods, independent of IMU substeps in each period."""
+    config = ObserverConfig(
+        dkf_delay_steps=2, camera_position_b_m=camera_offset
+    )
+    delayed = PaperStateObserver(config=config)
+    reference = PaperStateObserver(config=config)
+    for observer in (delayed, reference):
+        observer.initialize_from_image(
+            (1.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0),
+            12.0,
+        )
+
+    imu_samples = [
+        ((0.01, -0.02, 0.03), (0.1, -0.1, GRAVITY), 0.005),
+        ((0.02, -0.01, 0.02), (0.0, 0.1, GRAVITY), 0.005),
+        ((0.03, 0.00, 0.01), (-0.1, 0.0, GRAVITY), 0.005),
+        ((0.02, 0.01, 0.00), (0.0, -0.1, GRAVITY), 0.005),
+    ]
+    measurement = (0.01, -0.008)
+    reference.correct_image(measurement)
+    for index, (gyro, accel, dt_s) in enumerate(imu_samples):
+        reference.predict(gyro, accel, dt_s)
+        delayed.predict(gyro, accel, dt_s)
+        # Deliberately make the two DKF periods contain one and three IMU
+        # substeps: readiness must depend on two periods, not four samples.
+        if index in (0, 3):
+            delayed.complete_dkf_cycle()
+
+    assert delayed.delay_history_ready
+    result = delayed.correct_delayed_image(measurement)
+    expected = reference.snapshot()
+    assert result.state.as_vector() == pytest.approx(
+        expected.state.as_vector(), abs=1e-12
+    )
+    assert result.covariance == pytest.approx(
+        expected.covariance, abs=1e-12
+    )
+    assert result.prediction_count == len(imu_samples)
+    assert result.correction_count == 1
+
+
+def test_delayed_replay_preserves_correlated_initial_covariance() -> None:
+    config = ObserverConfig(dkf_delay_steps=1)
+    delayed = PaperStateObserver(config=config)
+    reference = PaperStateObserver(config=config)
+    relative_covariance = np.diag((1.0, 1.2, 1.4, 0.2, 0.3, 0.4))
+    relative_covariance[0, 3] = relative_covariance[3, 0] = 0.05
+    cross_covariance = np.array(
+        ((0.004, 0.0, 0.0), (0.0, 0.003, 0.0))
+    )
+    for observer in (delayed, reference):
+        observer.initialize_from_image(
+            (1.0, 0.0, 0.0, 0.0),
+            (0.01, -0.02),
+            12.0,
+            relative_covariance=relative_covariance,
+            image_position_covariance=cross_covariance,
+        )
+    measurement = (0.025, -0.01)
+    reference.correct_image(measurement)
+    for sample in (
+        ((0.01, -0.02, 0.0), (0.0, 0.0, GRAVITY), 0.005),
+        ((0.02, -0.01, 0.01), (0.1, 0.0, GRAVITY), 0.005),
+    ):
+        reference.predict(*sample)
+        delayed.predict(*sample)
+    delayed.complete_dkf_cycle()
+    replayed = delayed.correct_delayed_image(measurement)
+    expected = reference.snapshot()
+    assert replayed.state.as_vector() == pytest.approx(
+        expected.state.as_vector(), abs=1e-12
+    )
+    assert replayed.covariance == pytest.approx(
+        expected.covariance, abs=1e-12
+    )
+
+
+def test_delayed_update_waits_for_complete_dkf_history() -> None:
+    observer = PaperStateObserver(
+        config=ObserverConfig(dkf_delay_steps=4)
+    )
+    observer.initialize_from_image(
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0),
+        12.0,
+    )
+    for _ in range(3):
+        for _ in range(4):
+            observer.predict(
+                (0.0, 0.0, 0.0),
+                (0.0, 0.0, GRAVITY),
+                0.005,
+            )
+        observer.complete_dkf_cycle()
+    before = observer.snapshot()
+    assert not observer.delay_history_ready
+    with pytest.raises(RuntimeError, match='3/4 DKF cycles'):
+        observer.correct_delayed_image((0.01, 0.0))
+    after = observer.snapshot()
+    assert after.state == before.state
+    assert after.covariance == pytest.approx(before.covariance)
+
+
+def test_consecutive_delayed_updates_preserve_overlapping_history() -> None:
+    """A replayed correction must update checkpoints used by the next frame."""
+    config = ObserverConfig(dkf_delay_steps=2)
+    delayed = PaperStateObserver(config=config)
+    expected = PaperStateObserver(config=config)
+    for observer in (delayed, expected):
+        observer.initialize_from_image(
+            (1.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0),
+            12.0,
+        )
+    imu_samples = [
+        ((0.01, 0.00, 0.02), (0.0, 0.0, GRAVITY), 0.005),
+        ((0.02, 0.00, 0.01), (0.1, 0.0, GRAVITY), 0.005),
+        ((0.01, 0.01, 0.00), (0.0, 0.1, GRAVITY), 0.005),
+        ((0.00, 0.02, 0.01), (0.0, 0.0, GRAVITY), 0.005),
+        ((0.01, 0.01, 0.02), (-0.1, 0.0, GRAVITY), 0.005),
+        ((0.02, 0.00, 0.01), (0.0, -0.1, GRAVITY), 0.005),
+    ]
+    first_measurement = (0.01, -0.008)
+    second_measurement = (0.015, -0.006)
+
+    expected.correct_image(first_measurement)
+    for sample in imu_samples[:2]:
+        expected.predict(*sample)
+    expected.correct_image(second_measurement)
+    for sample in imu_samples[2:]:
+        expected.predict(*sample)
+
+    for cycle in range(2):
+        for sample in imu_samples[cycle * 2:(cycle + 1) * 2]:
+            delayed.predict(*sample)
+        delayed.complete_dkf_cycle()
+    delayed.correct_delayed_image(first_measurement)
+    for sample in imu_samples[4:]:
+        delayed.predict(*sample)
+    delayed.complete_dkf_cycle()
+    result = delayed.correct_delayed_image(second_measurement)
+
+    assert result.state.as_vector() == pytest.approx(
+        expected.snapshot().state.as_vector(), abs=1e-12
+    )
+    assert result.covariance == pytest.approx(
+        expected.snapshot().covariance, abs=1e-12
+    )
+
+
+def test_image_measurement_is_applied_without_extra_innovation_gate() -> None:
+    observer = PaperStateObserver()
+    observer.initialize_from_image(
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0),
+        12.0,
+    )
+    before = observer.snapshot()
+    after = observer.correct_image((0.04, 0.0))
+    assert after.correction_count == 1
+    assert after.state.image_xy[0] > before.state.image_xy[0]
+    assert after.innovation_norm == pytest.approx(0.04)
+
+
+def test_image_covariance_uses_paper_equation_35() -> None:
+    observer = _initialized_observer()
+    before = observer.snapshot()
+    H = np.zeros((2, STATE_DIM))
+    H[:, IMAGE_SLICE] = np.eye(2)
+    measurement = np.array((0.04, -0.03))
+    innovation = measurement - H @ before.state.as_vector()
+    measurement_covariance = H @ before.covariance @ H.T
+    measurement_covariance += np.eye(2) * observer.noise.image_noise_std ** 2
+    gain = np.linalg.solve(
+        measurement_covariance.T,
+        (before.covariance @ H.T).T,
+    ).T
+    expected = (np.eye(STATE_DIM) - gain @ H) @ before.covariance
+
+    after = observer.correct_image(measurement)
+
+    assert after.covariance == pytest.approx(expected)
+    assert after.innovation_norm == pytest.approx(np.linalg.norm(innovation))
+
+
+def test_image_innovation_updates_observable_imu_bias_states() -> None:
+    """Appendix cross-covariances allow both bias estimates to be corrected."""
+    observer = _initialized_observer()
+    for _ in range(10):
+        observer.predict(
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, GRAVITY),
+            0.01,
+        )
+    before = observer.snapshot().state
+    after = observer.correct_image((0.04, -0.03)).state
+    assert np.linalg.norm(after.b_gyr_b) > np.linalg.norm(before.b_gyr_b)
+    assert np.linalg.norm(after.b_acc_b) > np.linalg.norm(before.b_acc_b)
+
+
+def test_long_stationary_run_stays_normalized_continuous_and_finite() -> None:
+    observer = _initialized_observer(image_xy=(0.02, -0.01))
+    previous_q = np.asarray(observer.snapshot().state.q)
+    for step in range(1000):
+        snapshot = observer.predict(
+            (0.001, -0.002, 0.0015),
+            (0.0, 0.0, GRAVITY),
+            0.005,
+        )
+        if step % 7 == 0:
+            snapshot = observer.correct_image((0.02, -0.01))
+        q = np.asarray(snapshot.state.q)
+        assert np.linalg.norm(q) == pytest.approx(1.0, abs=1e-12)
+        assert float(np.dot(q, previous_q)) > 0.999
+        assert np.all(np.isfinite(snapshot.state.as_vector()))
+        assert np.all(np.isfinite(snapshot.covariance))
+        previous_q = q
+    assert snapshot.prediction_count == 1000
+    assert snapshot.correction_count == math.ceil(1000 / 7)
+    assert snapshot.state.image_xy == pytest.approx((0.02, -0.01), abs=0.01)
+    assert np.linalg.norm(snapshot.state.v_r_e) < 1.0
+    assert np.linalg.eigvalsh(snapshot.covariance)[0] >= -1e-10
+
+
+def test_invalid_prediction_does_not_mutate_state() -> None:
+    observer = _initialized_observer()
+    before = observer.snapshot()
+    with pytest.raises(ValueError, match='dt_s'):
+        observer.predict((0.0, 0.0, 0.0), (0.0, 0.0, GRAVITY), 0.1)
+    after = observer.snapshot()
+    assert after.state == before.state
+    assert after.covariance == pytest.approx(before.covariance)
+
+
+@pytest.mark.parametrize('depth_m', (0.249, 0.1, 1e-6))
+def test_positive_depth_below_old_limit_still_predicts(depth_m) -> None:
+    observer = _initialized_observer(image_xy=(0.1, -0.05), depth_m=depth_m)
+    snapshot = observer.predict(
+        (0.0, 0.0, 0.0), (0.0, 0.0, GRAVITY), 0.005,
+    )
+    assert snapshot.prediction_count == 1
+    assert snapshot.state.p_r_e == pytest.approx(
+        (-depth_m, 0.1 * depth_m, -0.05 * depth_m)
+    )
+    assert snapshot.state.image_xy == pytest.approx((0.1, -0.05))
+    assert np.all(np.isfinite(snapshot.covariance))
+
+
+@pytest.mark.parametrize('depth_m', (0.0, -0.1))
+def test_nonpositive_depth_still_rejects_prediction(depth_m) -> None:
+    observer = PaperStateObserver()
+    observer.initialize(InterceptionState18(
+        q=(1.0, 0.0, 0.0, 0.0),
+        p_r_e=(-depth_m, 0.0, 0.0),
+        v_r_e=(0.0, 0.0, 0.0),
+        image_xy=(0.0, 0.0),
+        b_gyr_b=(0.0, 0.0, 0.0),
+        b_acc_b=(0.0, 0.0, 0.0),
+    ))
+    before = observer.snapshot()
+    with pytest.raises(ValueError, match='depth'):
+        observer.predict((0.0, 0.0, 0.0), (0.0, 0.0, GRAVITY), 0.005)
+    after = observer.snapshot()
+    assert after.state == before.state
+    assert after.covariance == pytest.approx(before.covariance)
+    assert after.prediction_count == 0
+
+
+def test_reset_discards_state_and_counters() -> None:
+    observer = _initialized_observer()
+    observer.predict((0.0, 0.0, 0.0), (0.0, 0.0, GRAVITY), 0.01)
+    observer.reset()
+    assert not observer.initialized
+    assert observer.prediction_count == 0
+    assert observer.correction_count == 0
+
+
+def test_dkf_delay_configuration_requires_integer_period_counts() -> None:
+    with pytest.raises(ValueError, match='dkf_delay_steps'):
+        ObserverConfig(dkf_delay_steps=-1).validate()
+
+
+@pytest.mark.parametrize('depth', (0.15, 0.5, 12.0))
+def test_offset_camera_initialization_and_image_motion_match_projection(depth):
+    """Near-field prediction follows the actual moving optical centre."""
+    offset = np.array((0.12, 0.0, 0.2))
+    observer = PaperStateObserver(
+        ObserverConfig(camera_position_b_m=tuple(offset))
+    )
+    initial = observer.initialize_from_image(
+        (0.98, 0.02, 0.1, -0.02), (0.13, -0.07), depth,
+        initial_v_r_e=(0.8, -0.5, 0.2),
+    ).state
+    R = _quaternion_to_rotation(np.asarray(initial.q))
+    C = observer._r_c_to_b
+    p = np.asarray(initial.p_r_e)
+    velocity = np.asarray(initial.v_r_e)
+    omega = np.array((0.3, -0.2, 0.1))
+
+    def project(time_s):
+        rotation = R @ rodrigues(omega / np.linalg.norm(omega),
+                                 np.linalg.norm(omega) * time_s)
+        point = C.T @ (-rotation.T @ (p + velocity * time_s) - offset)
+        return point[:2] / point[2]
+
+    assert project(0.0) == pytest.approx(initial.image_xy)
+    assert (C.T @ (-R.T @ p - offset))[2] == pytest.approx(depth)
+    dt_s = 0.005
+    predicted = observer.predict(omega, (0.0, 0.0, GRAVITY), dt_s)
+    image_rate = (
+        np.asarray(predicted.state.image_xy) - initial.image_xy
+    ) / dt_s
+    epsilon = 1e-7
+    assert image_rate == pytest.approx(
+        (project(epsilon) - project(-epsilon)) / (2.0 * epsilon), abs=1e-7
+    )
+
+
+@pytest.mark.parametrize('offset', ((0.0, 0.0, 0.0), (0.12, -0.03, 0.2)))
+def test_camera_image_jacobians_include_depth_and_lever_arm(offset):
+    observer = PaperStateObserver(ObserverConfig(camera_position_b_m=offset))
+    observer.initialize_from_image(
+        (0.98, 0.02, 0.1, -0.02), (0.13, -0.07), 0.5,
+        initial_v_r_e=(0.8, -0.5, 0.2),
+    )
+    state = observer.snapshot().state.as_vector()
+    gyro = np.array((0.3, -0.2, 0.1))
+    accel = np.array((0.0, 0.0, GRAVITY))
+    _, F, G = observer._appendix_prediction(state, gyro, accel, 0.005)
+    epsilon = 1e-7
+    for column in range(STATE_DIM):
+        delta = np.zeros(STATE_DIM)
+        delta[column] = epsilon
+        plus, _, _ = observer._appendix_prediction(
+            state + delta, gyro, accel, 0.005
+        )
+        minus, _, _ = observer._appendix_prediction(
+            state - delta, gyro, accel, 0.005
+        )
+        assert F[IMAGE_SLICE, column] == pytest.approx(
+            (plus[IMAGE_SLICE] - minus[IMAGE_SLICE]) / (2.0 * epsilon),
+            abs=1e-9,
+        )
+    assert G[IMAGE_SLICE, :3] == pytest.approx(F[IMAGE_SLICE, GYRO_BIAS_SLICE])
+
+
+@pytest.mark.parametrize('offset', ((0.0, 0.0), (0.12, math.nan, 0.2)))
+def test_camera_offset_requires_finite_three_vector(offset):
+    with pytest.raises(ValueError, match='camera_position_b_m'):
+        PaperStateObserver(ObserverConfig(camera_position_b_m=offset))

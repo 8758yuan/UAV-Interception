@@ -616,27 +616,17 @@ class PaperStateObserver:
         F[V_R_SLICE, ACCEL_BIAS_SLICE] = f_v_b_acc
         G[V_R_SLICE, 3:6] = f_v_b_acc
 
+        # Paper (52) holds depth fixed; its image-position block stays zero.
         f_image_q = np.column_stack(
             [
                 translation_jacobian
                 @ self._r_c_to_b.T
                 @ derivative.T
                 @ v_r
-                + (translation_jacobian @ velocity_c) / depth_m
-                * (self._r_c_to_b.T @ derivative.T @ p_r)[2]
                 for derivative in rotation_derivatives
             ]
         ) * dt_s
         F[IMAGE_SLICE, Q_SLICE] = f_image_q
-        # Depth includes the fixed camera offset. Since the translational
-        # image rate is proportional to 1/z, position uncertainty changes
-        # the predicted image whenever relative translation is present.
-        F[IMAGE_SLICE, P_R_SLICE] = (
-            np.outer(
-                translation_jacobian @ velocity_c,
-                earth_to_camera[2],
-            ) * (dt_s / depth_m)
-        )
         F[IMAGE_SLICE, V_R_SLICE] = (
             translation_jacobian @ self._r_c_to_b.T @ r_b_to_e.T * dt_s
         )

@@ -1,0 +1,30 @@
+paper_state_observer:
+  ros__parameters:
+    # Gazebo仿真使用true；实机使用false。
+    use_sim_time: true
+
+    # 输入/输出话题，除非修改系统命名空间，否则不要调整。
+    imu_topic: /fmu/out/sensor_combined
+    attitude_topic: /fmu/out/vehicle_attitude
+    feature_topic: /interception/vision/raw_feature
+    state_topic: /interception/observer/state
+    reset_topic: /interception/observer/reset
+    bootstrap_topic: /interception/observer/bootstrap
+    # true：仅在起飞且目标处于安全视线范围后收到reset时初始化观测器。
+    require_interception_reset: true
+    # 使用已知气球尺寸的单帧粗估距初始化，不接受固定深度猜值。
+    require_range_bootstrap: true
+    bootstrap_max_age_s: 0.5
+
+    # 初始化参数、P(0)、Q、R、延迟周期D和DKF频率统一在
+    # design_parameters.yaml中调整。
+
+    # ENU重力(m/s^2)；相机到FLU机体系旋转矩阵按行展开，安装不变时勿调。
+    gravity_e: [0.0, 0.0, -9.80665]
+    camera_to_body_rotation: [0.0, 0.0, 1.0,
+                              -1.0, 0.0, 0.0,
+                              0.0, -1.0, 0.0]
+    # 与控制器使用同一实际安装位置；状态p_r/v_r仍定义在机体原点。
+    camera_position_b_m: [0.14, 0.0, 0.0]
+    # 单次IMU传播最大步长(s)；较大时间间隔会被拆分计算。
+    maximum_dt_s: 0.05

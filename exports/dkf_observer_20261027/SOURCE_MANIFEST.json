@@ -1,0 +1,96 @@
+{
+  "created_at": "2026-10-27T16:48:59.721437+08:00",
+  "source_commit": "64549a13f02b15cab68c573f0612ea3c844e1317",
+  "snapshot": "Current working-tree files, including local observer parameter changes; not a git-commit-only export.",
+  "source_files": {
+    "src/ibvs_control/ibvs_control/__init__.py": {
+      "sha256": "fcc8226c370417e8fb3939fddec8c1904e9cd3b80f6dbdf19dbb18d26b0ee3c1",
+      "operation": "copied unchanged"
+    },
+    "src/ibvs_control/ibvs_control/paper_state_observer.py": {
+      "sha256": "82beca5d91a95f7ddcb5fbe48f66fc2d081dfdd8707cd673afb8ef41b31237e8",
+      "operation": "copied unchanged"
+    },
+    "src/ibvs_control/ibvs_control/paper_state_observer_node.py": {
+      "sha256": "0dec7f5421e95e584caf7f6e84b81cbc18164712661dc2c0e0f4be68ff86b52d",
+      "operation": "copied unchanged"
+    },
+    "src/ibvs_control/ibvs_control/frames.py": {
+      "sha256": "96230bcaa33b4a4680192473f1cede363696a10dd29fcea602e784a8c032363d",
+      "operation": "copied unchanged"
+    },
+    "src/ibvs_control/config/paper_state_observer.yaml": {
+      "sha256": "12ebced3f4750ea74030e4536e14fb4011fc76ada04e57027050bd05ae9b3931",
+      "operation": "copied unchanged"
+    },
+    "src/ibvs_control/launch/paper_state_observer.launch.py": {
+      "sha256": "92eaf6678d9585aebad37d60765d7472325b998a705b4528238c004836193f14",
+      "operation": "copied unchanged"
+    },
+    "src/ibvs_control/setup.cfg": {
+      "sha256": "885e4c1720e570cbb0299efd2540f00ca5febbcbaadc206225ea93cc7243c5cb",
+      "operation": "copied unchanged"
+    },
+    "src/ibvs_control/resource/ibvs_control": {
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "operation": "copied unchanged"
+    },
+    "src/ibvs_control/test/test_paper_state_observer_node.py": {
+      "sha256": "272440fefbd1696c6db045b3b876885781e307103024b1d42ecab2010c1b0640",
+      "operation": "copied unchanged"
+    },
+    "src/interception_interfaces/package.xml": {
+      "sha256": "17a5645955d723ead5149997220a663a7125d49ef562ea7c63c71938af4d74db",
+      "operation": "copied unchanged"
+    },
+    "src/interception_interfaces/msg/VisionFeature.msg": {
+      "sha256": "12950562927299b5f65e05d077a716f41775c14a0d2fef6d1c54d178b832676b",
+      "operation": "copied unchanged"
+    },
+    "src/interception_interfaces/msg/ObserverBootstrap.msg": {
+      "sha256": "158b8fd32a39c590408d550070d3643e02dd5d2ce79121f37a796b6ed90966ce",
+      "operation": "copied unchanged"
+    },
+    "src/interception_interfaces/msg/ObserverState.msg": {
+      "sha256": "4186a3b52052ba05beb6c9500f01ba80798b1ba5af24aaed6b483c7e8af47c2d",
+      "operation": "copied unchanged"
+    },
+    "src/interception_interfaces/msg/ObserverEvaluation.msg": {
+      "sha256": "d97fc98aee0ef43f36605fb78d2506af42fb901c50fe491189f2add56d2f2a71",
+      "operation": "copied unchanged"
+    },
+    "src/ibvs_control/config/design_parameters.yaml": {
+      "sha256": "9c2bc2f9cc3d4e413bdc346c3f8a908853872fb60d15d728ddcd57e58e8d8c8b",
+      "operation": "extracted paper_state_observer section; parameter values unchanged"
+    },
+    "src/ibvs_control/ibvs_control/so3_controller.py": {
+      "sha256": "e49649f7caf9439ff89962d1a9cd6581ca85b145906f69c9dc1906126e44bc85",
+      "operation": "extracted rodrigues, skew, _vector3, _unit3 unchanged for tests only; controller excluded"
+    },
+    "src/ibvs_control/test/test_paper_state_observer.py": {
+      "sha256": "f8ce38f3afa318021bd9c35c64cce8af965cf76fab14b4b0f3911f1d8189a789",
+      "operation": "changed only rodrigues import to test-local helper"
+    },
+    "src/ibvs_control/setup.py": {
+      "sha256": "a1742b6106f2388ca318a92dd79a34ed6fd01135736558b5b599791f5b0be2c4",
+      "operation": "replaced in delivery copy with observer-only setup and entry point"
+    },
+    "src/ibvs_control/package.xml": {
+      "sha256": "5ac79004b5bb3c7c329114e1830c7984efd0fff6807cd9c568ad24acaae4f884",
+      "operation": "replaced in delivery copy with observer-only dependencies"
+    },
+    "src/interception_interfaces/CMakeLists.txt": {
+      "sha256": "7d7867f44131cbaa46b7eee2b12767c7e99f1c0062f84d018cbe5ffcc8a55c81",
+      "operation": "removed unrelated ControlDebug.msg generation in delivery copy"
+    }
+  },
+  "px4_msgs": {
+    "repository": "https://github.com/PX4/px4_msgs.git",
+    "reference_commit": "8fb8277cf95c4ba87094146bc8922e76c4ac0799",
+    "message_sha256": {
+      "SensorCombined.msg": "ccac9a26fcf460228fe55459fe6710eb2e608665ff13141676805e98cbd5e462",
+      "VehicleAttitude.msg": "d23f153b574daad31f21f767bc6e2781bcd486bb9e56c605b8b6fd10814b1c74"
+    },
+    "bundled": false
+  }
+}

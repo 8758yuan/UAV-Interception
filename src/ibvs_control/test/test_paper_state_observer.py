@@ -232,7 +232,7 @@ def test_image_state_block_matches_equation_54() -> None:
     assert jacobian == pytest.approx(numerical, abs=1e-8)
 
 
-def test_image_position_jacobian_matches_finite_difference() -> None:
+def test_image_position_and_attitude_blocks_follow_paper_fixed_depth() -> None:
     observer = PaperStateObserver()
     observer.initialize_from_image(
         (0.98, 0.02, 0.1, -0.02),
@@ -245,22 +245,23 @@ def test_image_position_jacobian_matches_finite_difference() -> None:
     accel = np.array((0.0, 0.0, GRAVITY))
     dt_s = 0.01
     _, F, _ = observer._appendix_prediction(state, gyro, accel, dt_s)
-    numerical = np.zeros((2, 3))
-    epsilon = 1e-6
-    for index in range(3):
-        offset = np.zeros(STATE_DIM)
-        offset[P_R_SLICE.start + index] = epsilon
-        plus, _, _ = observer._appendix_prediction(
-            state + offset, gyro, accel, dt_s
-        )
-        minus, _, _ = observer._appendix_prediction(
-            state - offset, gyro, accel, dt_s
-        )
+    assert np.array_equal(F[IMAGE_SLICE, P_R_SLICE], np.zeros((2, 3)))
+    q = state[Q_SLICE]
+    image_x, image_y = state[IMAGE_SLICE]
+    translation = np.array(((-1.0, 0.0, image_x), (0.0, -1.0, image_y))) / 9.0
+    numerical = np.zeros((2, 4))
+    epsilon = 1e-7
+    for index in range(4):
+        offset = np.zeros(4)
+        offset[index] = epsilon
+        plus = _quaternion_to_rotation(q + offset)
+        minus = _quaternion_to_rotation(q - offset)
+        # Equation (52) differentiates rotation while holding depth fixed.
         numerical[:, index] = (
-            plus[IMAGE_SLICE] - minus[IMAGE_SLICE]
-        ) / (2.0 * epsilon)
-    assert np.linalg.norm(F[IMAGE_SLICE, P_R_SLICE]) > 0.0
-    assert F[IMAGE_SLICE, P_R_SLICE] == pytest.approx(
+            translation @ observer._r_c_to_b.T @ (plus - minus).T
+            @ state[V_R_SLICE] * dt_s / (2.0 * epsilon)
+        )
+    assert F[IMAGE_SLICE, Q_SLICE] == pytest.approx(
         numerical, abs=1e-10
     )
 
@@ -601,7 +602,7 @@ def test_offset_camera_initialization_and_image_motion_match_projection(depth):
 
 
 @pytest.mark.parametrize('offset', ((0.0, 0.0, 0.0), (0.12, -0.03, 0.2)))
-def test_camera_image_jacobians_include_depth_and_lever_arm(offset):
+def test_camera_image_remaining_jacobians_include_lever_arm(offset):
     observer = PaperStateObserver(ObserverConfig(camera_position_b_m=offset))
     observer.initialize_from_image(
         (0.98, 0.02, 0.1, -0.02), (0.13, -0.07), 0.5,
@@ -612,7 +613,8 @@ def test_camera_image_jacobians_include_depth_and_lever_arm(offset):
     accel = np.array((0.0, 0.0, GRAVITY))
     _, F, G = observer._appendix_prediction(state, gyro, accel, 0.005)
     epsilon = 1e-7
-    for column in range(STATE_DIM):
+    # Paper's position/attitude blocks use the fixed-depth approximation above.
+    for column in range(V_R_SLICE.start, STATE_DIM):
         delta = np.zeros(STATE_DIM)
         delta[column] = epsilon
         plus, _, _ = observer._appendix_prediction(

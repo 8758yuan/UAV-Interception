@@ -1,0 +1,2 @@
+# Pure Python core runtime; ROS dependencies are documented separately.
+numpy

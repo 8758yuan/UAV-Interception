@@ -371,13 +371,16 @@ svg{width:100%;height:auto}a{color:#176c90}[hidden]{display:none}
     page += '位置和速度 (东, 北, 上)，图像坐标 (x, y)，IMU 偏置 (前, 左, 上)。</p>'
     page += snapshot_controls() + snapshot_table(snapshots)
     page += '<h2>3. 对比曲线</h2><label>选择要看的状态： <select id="group">' + options + '</select></label>'
+    activity = '独立测试' if metadata.get('test_case') else '拦截'
+    if metadata.get('test_case'):
+        page += f'<p>DKF 独立初测工况：{escape(metadata["test_case"])}；PX4 位置控制，观测器输出仅用于评估。</p>'
     if metadata.get('recording_start_time_ns') is not None:
         if metadata.get('recording_end_time_ns') is not None:
-            page += '<p>记录范围：进入 ACTIVE 至首次退出 ACTIVE，包含两个边界。时间从拦截开始计为 0 秒，最后一行包含结束时刻。</p>'
+            page += f'<p>记录范围：进入 ACTIVE 至首次退出 ACTIVE，包含两个边界。时间从{activity}开始计为 0 秒，最后一行包含结束时刻。</p>'
         else:
-            page += '<p class="notice">未收到拦截结束信号，记录被中断；不将最后一个采样点冒充正常结束时刻。</p>'
+            page += f'<p class="notice">未收到{activity}结束信号，记录被中断；不将最后一个采样点冒充正常结束时刻。</p>'
     elif 'recording_window' in metadata:
-        page += '<p class="notice">本次未收到进入 ACTIVE 的信号，没有记录拦截数据。</p>'
+        page += f'<p class="notice">本次未收到进入 ACTIVE 的信号，没有记录{activity}数据。</p>'
     else:
         page += '<p>旧记录未提供拦截起止信号，时间从首个已对时样本开始，最后一行保留最后一个样本。</p>'
     page += '<p>绿色实线是真实值，橙色虚线是 DKF 估计值；两条线越重合越好。'

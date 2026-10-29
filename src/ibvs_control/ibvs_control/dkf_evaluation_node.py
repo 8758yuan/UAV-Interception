@@ -34,6 +34,7 @@ class DkfEvaluationNode(Node):
             'target_model': 'ibvs_target', 'px4_to_gazebo_offset_s': float('nan'),
             'output_directory': str(Path.home() / 'ibvs_ws' / 'test_results' / 'dkf'),
             'run_id': '',
+            'test_case': '',
             'camera_to_body_rotation': [0., 0., 1., -1., 0., 0., 0., -1., 0.],
             'camera_position_b_m': [0.14, 0., 0.],
         }
