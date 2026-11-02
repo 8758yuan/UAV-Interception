@@ -37,6 +37,23 @@ def position_offset_enu(test_case, elapsed_s):
     return (0.0, 0.0, 0.0)
 
 
+def trajectory_acceleration_enu(test_case, elapsed_s):
+    """Differentiate the position reference twice, for recording only."""
+    if test_case == 'B':
+        return tuple(-amplitude * (2 * math.pi / period) ** 2
+                     * math.sin(2 * math.pi * elapsed_s / period)
+                     for amplitude, period in ((4., 20.), (6., 15.), (2., 18.)))
+    if test_case == 'C':
+        omega = 2 * math.pi / 20
+        return (-4 * omega ** 2 * math.sin(omega * elapsed_s),
+                -6 * (2 * omega) ** 2 * math.sin(2 * omega * elapsed_s),
+                -2 * omega ** 2 * math.sin(omega * elapsed_s))
+    if test_case == 'D':
+        up = -6 * math.cos(elapsed_s / 3) / (9 * math.sqrt(2))
+        return (-up, -6 * math.sin(elapsed_s / 3) / 9, up)
+    return (0., 0., 0.)
+
+
 class DkfStandaloneTest(VisionInterceptionCoordinator):
     """Reuse takeoff and size bootstrap, bypassing the interception loop."""
 
@@ -100,6 +117,12 @@ class DkfStandaloneTest(VisionInterceptionCoordinator):
             else self.state_machine.phase.value
         )
         status.reason = self.state_machine.abort_reason or f'DKF test {self.test_case}'
+        status.valid = status.control_state == 'ACTIVE'
+        if status.valid:
+            acceleration = trajectory_acceleration_enu(
+                self.test_case, (now_ns - self.test_start_ns) * 1e-9,
+            )
+            status.acceleration_d.x, status.acceleration_d.y, status.acceleration_d.z = acceleration
         self.debug_pub.publish(status)
         self.finished = self.state_machine.phase == FlightPhase.COMPLETE or (
             self.state_machine.phase == FlightPhase.ABORT

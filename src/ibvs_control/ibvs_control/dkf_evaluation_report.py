@@ -100,7 +100,8 @@ def snapshot_rows(samples):
         yield row
 
 
-def write_excel(directory, samples, metrics):
+def write_excel(directory, samples, metrics, *, comparison_rows=None,
+                summary_rows=None, filename='每0.5秒对比.xlsx', sheet_name='每0.5秒对比'):
     """Write the two-sheet XLSX using the standard Open XML ZIP format."""
     ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 
@@ -157,10 +158,15 @@ def write_excel(directory, samples, metrics):
         ['DKF 误差汇总（全频率统计；速度真值为差分近似，偏置真值不可用）'],
         ['状态', '单位', '平均绝对误差', '最大绝对误差', '均方根误差', '有效比较次数'],
     ]
-    for name, label, unit in STATE_COLUMNS:
+    for name, label, unit in (STATE_COLUMNS if summary_rows is None else ()):
         metric = metrics[name]
         summary.append([label, unit, number(metric['mae']), number(metric['max_abs_error']),
                         number(metric['rmse']), int(metric['count'])])
+    if comparison_rows is not None:
+        comparisons = comparison_rows
+        merges = ['A1:A2', 'B1:B2', 'C1:C2', 'D1:F1', 'G1:I1']
+    if summary_rows is not None:
+        summary = summary_rows
     relationships = 'http://schemas.openxmlformats.org/package/2006/relationships'
     document_rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
     styles = f'<styleSheet xmlns="{ns}">'
@@ -179,7 +185,7 @@ def write_excel(directory, samples, metrics):
                    'borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1">'
                    '<alignment horizontal="center" vertical="center" wrapText="1"/></xf>')
     styles += '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'
-    path = directory / '每0.5秒对比.xlsx'
+    path = directory / filename
     with ZipFile(path, 'w', ZIP_DEFLATED) as archive:
         archive.writestr('[Content_Types].xml',
                         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
@@ -192,7 +198,7 @@ def write_excel(directory, samples, metrics):
         archive.writestr('_rels/.rels', f'<Relationships xmlns="{relationships}">'
                         f'<Relationship Id="rId1" Type="{document_rel}/officeDocument" Target="xl/workbook.xml"/></Relationships>')
         archive.writestr('xl/workbook.xml', f'<workbook xmlns="{ns}" xmlns:r="{document_rel}"><sheets>'
-                        '<sheet name="每0.5秒对比" sheetId="1" r:id="rId1"/>'
+                        f'<sheet name="{escape(sheet_name)}" sheetId="1" r:id="rId1"/>'
                         '<sheet name="误差汇总" sheetId="2" r:id="rId2"/></sheets></workbook>')
         archive.writestr('xl/_rels/workbook.xml.rels', f'<Relationships xmlns="{relationships}">'
                         + ''.join(f'<Relationship Id="rId{i}" Type="{document_rel}/worksheet" Target="worksheets/sheet{i}.xml"/>'

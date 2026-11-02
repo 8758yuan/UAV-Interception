@@ -181,6 +181,15 @@ def generate_launch_description() -> LaunchDescription:
             OpaqueFunction(function=_prepare_directories),
             shutdown,
             bag,
+            Node(
+                package='ibvs_control', executable='acceleration_recorder',
+                name='acceleration_recorder', output='screen',
+                parameters=[{
+                    'use_sim_time': True,
+                    'world_name': LaunchConfiguration('world'),
+                    'vehicle_model': LaunchConfiguration('vehicle_model_name'),
+                }],
+            ),
             evaluation,
             observer,
             coordinator,

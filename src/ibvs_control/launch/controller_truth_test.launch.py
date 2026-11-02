@@ -125,5 +125,18 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_flight_commands', default_value='false'),
         DeclareLaunchArgument('confirmation_token', default_value=''),
         DeclareLaunchArgument('record_bag', default_value='true'),
+        Node(
+            package='ibvs_control', executable='acceleration_recorder',
+            name='acceleration_recorder', output='screen',
+            parameters=[{
+                'use_sim_time': True,
+                'trial_id': LaunchConfiguration('trial_id'),
+                'world_name': LaunchConfiguration('world'),
+                'vehicle_model': LaunchConfiguration('vehicle_model_name'),
+                'output_directory': PathJoinSubstitution([
+                    LaunchConfiguration('results_directory'), 'acceleration',
+                ]),
+            }],
+        ),
         shutdown, bag, OpaqueFunction(function=spawn_physics_probe), truth, coordinator,
     ])

@@ -185,7 +185,10 @@ def test_launch_reuses_observer_and_private_recording_window(test_case, tmp_path
     })
     actions = module._launch_test(context)
     nodes = {action.node_executable: action for action in actions if isinstance(action, Node)}
-    assert set(nodes) == {'dkf_standalone_test', 'dkf_evaluation', 'paper_state_observer'}
+    assert set(nodes) == {
+        'dkf_standalone_test', 'dkf_evaluation', 'paper_state_observer',
+        'acceleration_recorder',
+    }
     flight, = evaluate_parameters(context, nodes['dkf_standalone_test']._Node__parameters)
     assert flight['test_case'] == test_case
     assert flight['target_altitude_m'] == 10.0
@@ -219,7 +222,7 @@ def test_private_window_still_produces_existing_half_second_table(tmp_path, test
         for elapsed, phase in ((0., 'ACTIVE'), (0.5, 'ACTIVE'), (1., 'LAND')):
             status = SimpleNamespace(
                 stamp=Time(nanoseconds=int((100 + elapsed) * 1e9)).to_msg(),
-                control_state=phase, reason=f'DKF test {test_case}',
+                control_state=phase, reason=f'DKF test {test_case}', valid=False,
             )
             evaluator._control(status)
             output = ObserverEvaluation()

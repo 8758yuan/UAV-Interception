@@ -167,3 +167,28 @@ CSV 每行刷新；强制终止进程时，统计可能比数据落后至多一�
 /usr/bin/python3 -s /home/yuan/ibvs_ws/src/ibvs_control/ibvs_control/dkf_evaluation_report.py \
   /home/yuan/ibvs_ws/results/p4/dkf/<trial_id>
 ```
+
+### 每 0.5 秒加速度及运动曲线
+
+每次控制器测试、DKF 独立测试及视觉拦截测试由独立的
+`acceleration_recorder` 节点记录，不改变控制输入。每次生成三个文件：
+`<运行编号>_每0.5秒加速度对比.xlsx`、`<运行编号>_速度.png`、
+`<运行编号>_加速度.png`。每次运行创建一个 `<运行编号>/` 子文件夹，
+三个文件均保存其中，不生成 DKF 附带文件。
+
+默认保存目录：
+- 控制器真值测试：`results/controller_truth/acceleration/`
+- DKF 独立测试：`results/p4/dkf/acceleration/`
+- 视觉拦截测试：`results/acceleration/`
+
+Excel 从首次 ACTIVE 至首次退出 ACTIVE，每 0.5 秒取最近实际样本，
+分别保留期望值与真值采样时间，缺失数据标为“不可用”；每 0.5 秒刷新，退出时保存。
+控制器期望值为控制律输出；DKF 独立测试期望值为位置参考轨迹解析二阶导数，
+不是 PX4 内环输出，也不添加加速度前馈。
+
+两张 PNG 在节点正常退出时生成，覆盖节点收到的完整运动记录，包括起飞和降落，
+绘制 ENU 三轴及模长，并标出收到的 ACTIVE 和目标接触诊断事件。
+速度由 Gazebo 世界位置一阶差分，加速度由二阶差分得到，均为数值近似；不平滑或插值。
+曲线时间从首个运动样本起算，Excel 时间从 ACTIVE 起算。
+强制杀进程无法保证最后数据或曲线保存。旧 Excel 未保存完整运动数据，不能据此补画完整曲线。
+原有 DKF 状态评估报告和录包在各自目录继续保留。

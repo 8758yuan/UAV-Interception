@@ -34,6 +34,7 @@ setup(
             'offline_interception = ibvs_control.offline_interception:main',
             'paper_state_observer = '
             'ibvs_control.paper_state_observer_node:main',
+            'acceleration_recorder = ibvs_control.acceleration_recorder:main',
             'dkf_evaluation = ibvs_control.dkf_evaluation_node:main',
             'dkf_standalone_test = ibvs_control.dkf_standalone_test:main',
             'controller_truth_state = ibvs_control.controller_truth_state:main',

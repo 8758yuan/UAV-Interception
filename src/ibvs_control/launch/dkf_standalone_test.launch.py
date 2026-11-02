@@ -45,6 +45,18 @@ def _launch_test(context):
         name='dkf_standalone_test', output='screen', parameters=[flight],
     )
     return [
+        Node(
+            package='ibvs_control', executable='acceleration_recorder',
+            name='acceleration_recorder', output='screen',
+            parameters=[{
+                'use_sim_time': True,
+                'world_name': LaunchConfiguration('world'),
+                'vehicle_model': LaunchConfiguration('vehicle_model_name'),
+                'trial_id': LaunchConfiguration('trial_id'),
+                'output_directory': os.path.join(LaunchConfiguration('output_directory').perform(context), 'acceleration'),
+                'debug_topic': '/interception/dkf_test/status',
+            }],
+        ),
         RegisterEventHandler(OnProcessExit(
             target_action=runner,
             on_exit=[EmitEvent(event=Shutdown(reason='DKF standalone test finished'))],
