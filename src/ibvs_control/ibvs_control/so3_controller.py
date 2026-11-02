@@ -14,11 +14,12 @@ class OuterLoopConfig:
     position_gain contains the positive ENU x/y/z position gains. The paper
     uses (1.0, 1.0, 1.0); the diagonal position weighting retains cancellation
     with the componentwise position feedback in the velocity error equation.
+    velocity_gain contains the positive ENU x/y/z velocity error gains.
     v_c is the positive constant closing-speed component in m/s.
     """
 
     k1: float
-    k2: float
+    velocity_gain: tuple[float, float, float]
     k_b: float
     mass_kg: float
     thrust_max_n: float
@@ -29,15 +30,18 @@ class OuterLoopConfig:
     def validate(self) -> None:
         """Reject nonphysical gains and limits."""
         positive = (
-            self.k1, self.k2, self.k_b, self.mass_kg, self.v_c,
+            self.k1, self.k_b, self.mass_kg, self.v_c,
         )
         if not all(math.isfinite(value) and value > 0.0 for value in positive):
             raise ValueError(
-                'k1, k2, k_b, mass_kg, and v_c must be positive'
+                'k1, k_b, mass_kg, and v_c must be positive'
             )
         position_gain = _vector3(self.position_gain, 'position_gain')
         if np.any(position_gain <= 0.0):
             raise ValueError('position_gain components must be positive')
+        velocity_gain = _vector3(self.velocity_gain, 'velocity_gain')
+        if np.any(velocity_gain <= 0.0):
+            raise ValueError('velocity_gain components must be positive')
         if not 0.0 < self.k_b < 2.0:
             raise ValueError('k_b must be within (0, 2)')
         if not math.isfinite(self.thrust_max_n) or self.thrust_max_n <= 0.0:
@@ -107,8 +111,9 @@ def compute_outer_loop(
     *,
     target_acceleration_e: Sequence[float] = (0.0, 0.0, 0.0),
     drag_force_e: Sequence[float] = (0.0, 0.0, 0.0),
+    camera_position_b_m: Sequence[float] = (0.0, 0.0, 0.0),
 ) -> OuterLoopResult:
-    """Evaluate the IBVS law with v_rd = (k1 * distance + v_c) * (-p_r/d)."""
+    """Evaluate body-origin interception with a fixed, offset camera."""
     config.validate()
     p_r = _vector3(p_r_e, 'p_r_e')
     v_r = _vector3(v_r_e, 'v_r_e')
@@ -117,10 +122,15 @@ def compute_outer_loop(
     rotation = _rotation3(attitude_b_to_e, 'attitude_b_to_e')
     a_target = _vector3(target_acceleration_e, 'target_acceleration_e')
     drag = _vector3(drag_force_e, 'drag_force_e')
+    camera_position = _vector3(camera_position_b_m, 'camera_position_b_m')
 
     distance_m = float(np.linalg.norm(p_r))
     if distance_m <= 1e-6:
         raise ValueError('relative distance is too small for the controller')
+    camera_offset_e = rotation @ camera_position
+    camera_distance_m = float(np.linalg.norm(-p_r - camera_offset_e))
+    if camera_distance_m <= 1e-6:
+        raise ValueError('camera distance is too small for the controller')
     # Unit-vector roundoff must not put an aligned LOS outside its domain.
     z1 = 1.0 - float(np.clip(n_td @ n_t, -1.0, 1.0))
     denominator = config.k_b**2 - z1**2
@@ -138,11 +148,12 @@ def compute_outer_loop(
     )
     z2 = v_r - velocity_d
     projection = -np.eye(3) + np.outer(n_t, n_t)
+    visual_direction = projection @ n_td
     acceleration_d = (
         velocity_d_dot
-        - config.k2 * z2
+        - np.asarray(config.velocity_gain) * z2
         - np.asarray(config.position_gain) * p_r
-        + barrier_gain * config.mass_kg / distance_m * projection @ n_td
+        + barrier_gain * config.mass_kg / camera_distance_m * visual_direction
         + a_target
     )
     gravity = np.array((0.0, 0.0, -config.gravity_m_s2))
@@ -153,7 +164,22 @@ def compute_outer_loop(
     attitude_d = rotation_between(n_f, n_fd) @ rotation
     raw_thrust_n = float(n_f @ desired_force)
     thrust_n = min(max(raw_thrust_n, 0.0), config.thrust_max_n)
-    omega1_b = barrier_gain * rotation.T @ np.cross(n_td, n_t)
+    # Exact camera-LOS rotation gradient, including the fixed lever arm.
+    los_rotation_gradient = (
+        np.cross(n_td, n_t)
+        + np.cross(camera_offset_e, visual_direction) / camera_distance_m
+    )
+    reference_depth_m = camera_distance_m + float(camera_offset_e @ n_t)
+    if reference_depth_m == 0.0:
+        raise ValueError('camera reference drift correction is singular')
+    # Cancel image drift caused by the body-origin radial velocity reference.
+    reference_rate_e = (
+        (config.k1 + config.v_c / distance_m)
+        * np.cross(camera_offset_e, n_t) / reference_depth_m
+    )
+    omega1_b = rotation.T @ (
+        barrier_gain * los_rotation_gradient + reference_rate_e
+    )
     return OuterLoopResult(
         z1=z1,
         z2_e=z2,

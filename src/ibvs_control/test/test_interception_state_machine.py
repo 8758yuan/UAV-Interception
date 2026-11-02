@@ -1,7 +1,6 @@
 """Tests for the reusable interception safety gate."""
 
 import inspect
-import math
 
 from ibvs_control.interception_state_machine import (
     InterceptionAction,
@@ -20,8 +19,6 @@ def _safe_step(machine, now_s, **overrides):
         'controller_valid': True,
         'telemetry_age_s': 0.01,
         'command_age_s': 0.01,
-        'speed_m_s': 0.0,
-        'tilt_rad': 0.0,
         'barrier_margin': 0.2,
     }
     values.update(overrides)
@@ -167,8 +164,6 @@ def test_every_active_flight_safety_gate_requests_landing() -> None:
         ({'offboard': False}, 'offboard_lost'),
         ({'controller_valid': False}, 'controller_invalid'),
         ({'telemetry_age_s': 0.21}, 'telemetry_timeout'),
-        ({'speed_m_s': 21.01}, 'speed_limit'),
-        ({'tilt_rad': math.radians(56.0)}, 'tilt_limit'),
     )
     for override, reason in failures:
         machine = InterceptionStateMachine(

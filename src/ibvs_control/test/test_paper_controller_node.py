@@ -171,7 +171,7 @@ def test_default_outer_loop_does_not_clip_paper_acceleration() -> None:
         z2_x = 2.2 - (node.paper_config.k1 * 7.0 + node.paper_config.v_c)
         expected_x = (
             -node.paper_config.k1 * 2.2
-            - node.paper_config.k2 * z2_x
+            - node.paper_config.velocity_gain[0] * z2_x
             - node.paper_config.position_gain[0] * -7.0
         )
         assert result.acceleration_d_e == pytest.approx(
@@ -204,6 +204,33 @@ def test_ros_position_gain_vector_reaches_outer_loop() -> None:
     try:
         node = VisionInterceptionCoordinator()
         assert node.paper_config.position_gain == pytest.approx((0.2, 0.3, 0.8))
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def test_ros_velocity_gain_vector_reaches_outer_loop() -> None:
+    rclpy.init(args=['--ros-args', '-p', 'velocity_gain:=[0.6,0.9,2.7]'])
+    node = None
+    try:
+        node = VisionInterceptionCoordinator()
+        assert node.paper_config.velocity_gain == pytest.approx((0.6, 0.9, 2.7))
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def test_node_defaults_use_global_axis_gains() -> None:
+    rclpy.init()
+    node = None
+    try:
+        node = VisionInterceptionCoordinator()
+        assert node.paper_config.velocity_gain == pytest.approx((0.8, 0.8, 3.0))
+        assert node.paper_config.position_gain == pytest.approx((0.05, 0.05, 1.0))
     finally:
         if node is not None:
             node.destroy_node()
@@ -330,9 +357,10 @@ def test_only_verified_contact_commits_the_impact_transition() -> None:
             rclpy.shutdown()
 
 
-def test_angular_rate_changes_do_not_add_acceleration_feedback(monkeypatch):
+@pytest.mark.parametrize('offset', ((0.14, 0.0, 0.0), (0.12, -0.03, 0.2)))
+def test_angular_rate_changes_do_not_add_acceleration_feedback(monkeypatch, offset):
     """The outer loop consumes the observer's body-origin relative state."""
-    rclpy.init()
+    rclpy.init(args=['--ros-args', '-p', f'camera_position_b_m:={list(offset)}'])
     node = None
     try:
         node = VisionInterceptionCoordinator()
@@ -364,6 +392,9 @@ def test_angular_rate_changes_do_not_add_acceleration_feedback(monkeypatch):
             assert args[0] == pytest.approx((-12.0, 0.3, -1.0))
             assert args[1] == pytest.approx((3.0, 0.1, 0.2))
             assert 'target_acceleration_e' not in kwargs
+            assert kwargs['camera_position_b_m'] == pytest.approx(
+                offset
+            )
             assert node.px4_command is not None, node.control_reason
             accelerations.append(node.visual_result.acceleration_d_e)
         assert len(captured) == 2

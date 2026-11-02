@@ -109,8 +109,8 @@ def test_trial_bag_has_no_target_state_topic() -> None:
     assert "'minimum_bag_free_space_gb'" in trial_launch
 
 
-def test_vehicle_tilt_guard_does_not_shadow_interception_limit() -> None:
-    """Active interception must be terminated by its dedicated tilt gate."""
+def test_vehicle_tilt_guard_remains_without_interception_limits() -> None:
+    """Keep the vehicle tilt guard after removing interception-only limits."""
     config_path = (
         Path(__file__).parents[1]
         / 'config'
@@ -119,9 +119,9 @@ def test_vehicle_tilt_guard_does_not_shadow_interception_limit() -> None:
     parameters = yaml.safe_load(config_path.read_text(encoding='utf-8'))[
         'vision_interception_coordinator'
     ]['ros__parameters']
-    assert parameters['max_tilt_deg'] > parameters[
-        'interception_tilt_limit_deg'
-    ]
+    assert parameters['max_tilt_deg'] == 60.0
+    assert 'interception_tilt_limit_deg' not in parameters
+    assert 'speed_limit_m_s' not in parameters
 
 
 def test_flight_gains_have_finite_positive_axis_configuration() -> None:
@@ -134,10 +134,10 @@ def test_flight_gains_have_finite_positive_axis_configuration() -> None:
     parameters = yaml.safe_load(config_path.read_text(encoding='utf-8'))[
         'vision_interception_coordinator'
     ]['ros__parameters']
-    assert math.isfinite(parameters['paper_k2']) and parameters['paper_k2'] > 0.0
-    gains = parameters['position_gain']
-    assert len(gains) == 3
-    assert all(math.isfinite(value) and value > 0.0 for value in gains)
+    for name in ('position_gain', 'velocity_gain'):
+        gains = parameters[name]
+        assert len(gains) == 3
+        assert all(math.isfinite(value) and value > 0.0 for value in gains)
 
 
 def test_observer_uses_only_onboard_imu_attitude_and_image() -> None:
@@ -162,8 +162,8 @@ def test_trial_launches_and_records_observer() -> None:
     assert "'/interception/observer/state'" in trial_launch
     assert "'/interception/observer/reset'" in trial_launch
     assert "'/fmu/out/sensor_combined'" in trial_launch
-    assert "'speed_limit_m_s'" in trial_launch
-    assert "'interception_tilt_limit_deg': ParameterValue" in trial_launch
+    assert "'speed_limit_m_s'" not in trial_launch
+    assert "'interception_tilt_limit_deg'" not in trial_launch
     assert "'design_parameters.yaml'" in trial_launch
 
 
@@ -199,7 +199,7 @@ def test_paper_design_parameters_have_one_configuration_source() -> None:
     observer = design['paper_state_observer']['ros__parameters']
     assert set(controller) == {
         'paper_k1',
-        'paper_k2',
+        'velocity_gain',
         'v_c',
         'position_gain',
         'safe_los_angle_deg',

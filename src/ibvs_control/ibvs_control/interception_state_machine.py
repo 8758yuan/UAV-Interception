@@ -42,10 +42,6 @@ class InterceptionGateConfig:
     mission_timeout_s: float = 40.0
     telemetry_timeout_s: float = 0.2
     command_timeout_s: float = 0.1
-    # 拦截阶段最大飞行速度，单位m/s。
-    speed_limit_m_s: float = 21.0
-    # 拦截阶段最大倾角，单位rad，对应55deg。
-    tilt_limit_rad: float = math.radians(55.0)
     post_hit_coast_duration_s: float = 2.0
     recovery_settle_time_s: float = 1.0
     recovery_timeout_s: float = 15.0
@@ -57,8 +53,6 @@ class InterceptionGateConfig:
             'mission_timeout_s': self.mission_timeout_s,
             'telemetry_timeout_s': self.telemetry_timeout_s,
             'command_timeout_s': self.command_timeout_s,
-            'speed_limit_m_s': self.speed_limit_m_s,
-            'tilt_limit_rad': self.tilt_limit_rad,
             'post_hit_coast_duration_s': self.post_hit_coast_duration_s,
             'recovery_settle_time_s': self.recovery_settle_time_s,
             'recovery_timeout_s': self.recovery_timeout_s,
@@ -66,8 +60,6 @@ class InterceptionGateConfig:
         for name, value in positive.items():
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f'{name} must be finite and positive')
-        if self.tilt_limit_rad >= math.pi / 2.0:
-            raise ValueError('tilt_limit_rad must be less than pi/2')
         if self.command_timeout_s > self.telemetry_timeout_s:
             raise ValueError(
                 'command_timeout_s must not exceed telemetry_timeout_s'
@@ -109,8 +101,6 @@ class InterceptionStateMachine:
         controller_valid: bool,
         telemetry_age_s: float,
         command_age_s: float,
-        speed_m_s: float,
-        tilt_rad: float,
         barrier_margin: float,
         interception_detected: bool = False,
         recovery_ready: bool = False,
@@ -120,8 +110,6 @@ class InterceptionStateMachine:
             now_s,
             telemetry_age_s,
             command_age_s,
-            speed_m_s,
-            tilt_rad,
         )
         if not math.isfinite(barrier_margin):
             raise ValueError('barrier_margin must be finite')
@@ -147,8 +135,6 @@ class InterceptionStateMachine:
             controller_valid=controller_valid,
             telemetry_age_s=telemetry_age_s,
             command_age_s=command_age_s,
-            speed_m_s=speed_m_s,
-            tilt_rad=tilt_rad,
             barrier_margin=barrier_margin,
         )
         if self.phase in (
@@ -264,8 +250,6 @@ class InterceptionStateMachine:
         controller_valid: bool,
         telemetry_age_s: float,
         command_age_s: float,
-        speed_m_s: float,
-        tilt_rad: float,
         barrier_margin: float,
     ) -> str:
         if landed:
@@ -280,10 +264,6 @@ class InterceptionStateMachine:
             return 'telemetry_timeout'
         if command_age_s > self.config.command_timeout_s:
             return 'command_timeout'
-        if speed_m_s > self.config.speed_limit_m_s:
-            return 'speed_limit'
-        if tilt_rad > self.config.tilt_limit_rad:
-            return 'tilt_limit'
         # The controller's own Barrier domain ends at zero.  A positive
         # reserve here can abort an otherwise valid near-contact trajectory.
         if barrier_margin <= 0.0:

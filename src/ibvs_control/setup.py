@@ -36,6 +36,8 @@ setup(
             'ibvs_control.paper_state_observer_node:main',
             'dkf_evaluation = ibvs_control.dkf_evaluation_node:main',
             'dkf_standalone_test = ibvs_control.dkf_standalone_test:main',
+            'controller_truth_state = ibvs_control.controller_truth_state:main',
+            'controller_truth_coordinator = ibvs_control.controller_truth_coordinator:main',
             'p1_acceptance = ibvs_control.p1_trial_report:main',
             'px4_command_adapter = '
             'ibvs_control.px4_command_adapter_node:main',

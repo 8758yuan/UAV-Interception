@@ -102,7 +102,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.k_b = 1.0 - math.cos(math.radians(safe_angle_deg))
         self.paper_config = OuterLoopConfig(
             k1=self._float_parameter('paper_k1'),
-            k2=self._float_parameter('paper_k2'),
+            velocity_gain=tuple(self.get_parameter('velocity_gain').value),
             v_c=self._float_parameter('v_c'),
             position_gain=tuple(self.get_parameter('position_gain').value),
             k_b=self.k_b,
@@ -261,10 +261,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                     'interception_telemetry_timeout_s'
                 ),
                 command_timeout_s=self._float_parameter('command_timeout_s'),
-                speed_limit_m_s=self._float_parameter('speed_limit_m_s'),
-                tilt_limit_rad=math.radians(
-                    self._float_parameter('interception_tilt_limit_deg')
-                ),
                 post_hit_coast_duration_s=self._float_parameter(
                     'post_hit_coast_duration_s'
                 ),
@@ -420,9 +416,9 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('actuator_minimum_fraction', 0.15)
         self.declare_parameter('safe_los_angle_deg', 60.0)
         self.declare_parameter('paper_k1', 0.05)
-        self.declare_parameter('paper_k2', 3.0)
+        self.declare_parameter('velocity_gain', [0.8, 0.8, 3.0])
         self.declare_parameter('v_c', 0.5)
-        self.declare_parameter('position_gain', [1.0, 1.0, 1.0])
+        self.declare_parameter('position_gain', [0.05, 0.05, 1.0])
         self.declare_parameter('designed_los_pitch_deg', 0.0)
         self.declare_parameter(
             'camera_to_body_rotation',
@@ -452,10 +448,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('mission_timeout_s', 60.0)
         self.declare_parameter('interception_telemetry_timeout_s', 0.5)
         self.declare_parameter('command_timeout_s', 0.2)
-        # 拦截阶段最大飞行速度，单位m/s；超过后由安全门中止任务。
-        self.declare_parameter('speed_limit_m_s', 21.0)
-        # 拦截阶段最大倾角，单位deg；超过后由安全门中止任务。
-        self.declare_parameter('interception_tilt_limit_deg', 55.0)
         self.declare_parameter('post_hit_coast_duration_s', 0.20)
         self.declare_parameter('stabilize_duration_s', 3.0)
         self.declare_parameter('stabilize_tilt_tolerance_deg', 8.0)
@@ -747,6 +739,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
                         vehicle_attitude,
                         self.paper_config,
                         drag_force_e=drag_force_e,
+                        camera_position_b_m=self.camera_position_b_m,
                     )
                     self.last_outer_ns = now_ns
                 else:
@@ -847,8 +840,6 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             controller_valid=self.px4_command is not None,
             telemetry_age_s=self._telemetry_age_s(now_ns),
             command_age_s=self._command_age_s(now_ns),
-            speed_m_s=self.vehicle_speed_m_s,
-            tilt_rad=self.state_machine.tilt_rad,
             barrier_margin=self._barrier_margin(),
             interception_detected=self.visual_interception_complete,
             recovery_ready=self._stabilization_ready(now_s),

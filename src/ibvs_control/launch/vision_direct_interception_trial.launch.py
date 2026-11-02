@@ -74,8 +74,6 @@ def generate_launch_description() -> LaunchDescription:
     enabled = LaunchConfiguration('enable_flight_commands')
     token = LaunchConfiguration('confirmation_token')
     record_bag = LaunchConfiguration('record_bag')
-    speed_limit = LaunchConfiguration('speed_limit_m_s')
-    tilt_limit = LaunchConfiguration('interception_tilt_limit_deg')
     coordinator = Node(
         package='ibvs_control',
         executable='vision_interception_coordinator',
@@ -90,14 +88,6 @@ def generate_launch_description() -> LaunchDescription:
                     value_type=bool,
                 ),
                 'confirmation_token': token,
-                'speed_limit_m_s': ParameterValue(
-                    speed_limit,
-                    value_type=float,
-                ),
-                'interception_tilt_limit_deg': ParameterValue(
-                    tilt_limit,
-                    value_type=float,
-                ),
             },
         ],
     )
@@ -187,16 +177,6 @@ def generate_launch_description() -> LaunchDescription:
                 'minimum_bag_free_space_gb',
                 default_value='1.0',
                 description='启动录包所需的最小剩余磁盘空间，单位GiB',
-            ),
-            DeclareLaunchArgument(
-                'speed_limit_m_s',
-                default_value='21.0',
-                description='拦截阶段最大飞行速度，单位m/s',
-            ),
-            DeclareLaunchArgument(
-                'interception_tilt_limit_deg',
-                default_value='55.0',
-                description='拦截阶段最大倾角，单位deg',
             ),
             OpaqueFunction(function=_prepare_directories),
             shutdown,

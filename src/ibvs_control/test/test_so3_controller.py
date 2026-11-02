@@ -21,7 +21,7 @@ from ibvs_control.so3_controller import (
 
 CONFIG = OuterLoopConfig(
     k1=0.1,
-    k2=0.2,
+    velocity_gain=(0.2, 0.2, 0.2),
     k_b=0.3,
     mass_kg=2.0,
     thrust_max_n=40.0,
@@ -98,18 +98,18 @@ def test_aligned_outer_loop_has_zero_los_rate() -> None:
 def test_position_gain_reduces_far_range_acceleration() -> None:
     """A smaller position gain prevents large initial acceleration demand."""
     reduced = OuterLoopConfig(
-        0.05, 2.5, 0.06, 2.0, 40.0, position_gain=(0.3, 0.3, 0.3)
+        0.05, (2.5, 2.5, 2.5), 0.06, 2.0, 40.0, position_gain=(0.3, 0.3, 0.3)
     )
-    original = OuterLoopConfig(0.05, 2.5, 0.06, 2.0, 40.0)
+    original = OuterLoopConfig(0.05, (2.5, 2.5, 2.5), 0.06, 2.0, 40.0)
     args = ((-23.0, 0.0, 0.0), (0.0, 0.0, 0.0),
             (1.0, 0.0, 0.0), (1.0, 0.0, 0.0), np.eye(3))
     slower = compute_outer_loop(*args, reduced)
     baseline = compute_outer_loop(*args, original)
     assert slower.acceleration_d_e[0] == pytest.approx(
-        9.775 + reduced.k2 * reduced.v_c
+        9.775 + reduced.velocity_gain[0] * reduced.v_c
     )
     assert baseline.acceleration_d_e[0] == pytest.approx(
-        25.875 + original.k2 * original.v_c
+        25.875 + original.velocity_gain[0] * original.v_c
     )
     assert slower.omega1_b == pytest.approx(baseline.omega1_b)
 
@@ -144,6 +144,32 @@ def test_position_gain_changes_only_its_enu_acceleration_component(axis) -> None
     assert adjusted.omega1_b == pytest.approx(baseline.omega1_b)
 
 
+@pytest.mark.parametrize('gain', (
+    (0.0, 0.8, 3.0), (0.8, -0.1, 3.0), (0.8, 0.8, math.nan),
+    (math.inf, 0.8, 3.0), (0.8, 0.8), (0.8, 0.8, 3.0, 3.0), 0.8,
+))
+def test_velocity_gain_requires_three_finite_positive_components(gain) -> None:
+    with pytest.raises(ValueError, match='velocity_gain'):
+        replace(CONFIG, velocity_gain=gain).validate()
+
+
+@pytest.mark.parametrize('axis', range(3))
+def test_velocity_gain_changes_only_its_enu_acceleration_component(axis) -> None:
+    position = np.array((-3.0, -0.4, -0.2))
+    velocity = np.array((0.2, -0.1, 0.3))
+    rotation = rodrigues((0., 0., 1.), 0.2) @ rodrigues((1., 0., 0.), 0.1)
+    args = (position, velocity, -position / np.linalg.norm(position), rotation[:, 0], rotation)
+    baseline = compute_outer_loop(*args, CONFIG)
+    gains = list(CONFIG.velocity_gain)
+    gains[axis] = 0.8
+    adjusted = compute_outer_loop(*args, replace(CONFIG, velocity_gain=tuple(gains)))
+    expected_delta = np.zeros(3)
+    expected_delta[axis] = -(0.8 - CONFIG.velocity_gain[axis]) * baseline.z2_e[axis]
+    assert adjusted.acceleration_d_e - baseline.acceleration_d_e == pytest.approx(expected_delta)
+    assert adjusted.z2_e == pytest.approx(baseline.z2_e)
+    assert adjusted.omega1_b == pytest.approx(baseline.omega1_b)
+
+
 @pytest.mark.parametrize('v_c', (0.0, -0.1, math.nan, math.inf))
 def test_closing_speed_must_be_finite_and_positive(v_c) -> None:
     with pytest.raises(ValueError, match='v_c'):
@@ -161,7 +187,7 @@ def test_radial_reference_keeps_constant_closing_component(distance) -> None:
         (CONFIG.k1 * distance + CONFIG.v_c, 0.0, 0.0)
     )
     assert outer.acceleration_d_e == pytest.approx(
-        -CONFIG.k1 * velocity - CONFIG.k2 * outer.z2_e
+        -CONFIG.k1 * velocity - np.asarray(CONFIG.velocity_gain) * outer.z2_e
         + np.array((CONFIG.position_gain[0] * distance, 0.0, 0.0))
     )
 
@@ -202,7 +228,7 @@ def test_reference_derivative_matches_finite_difference_with_lateral_motion(
         )
         assert outer.z2_e == pytest.approx(expected_z2)
         assert outer.acceleration_d_e == pytest.approx(
-            numerical_derivative - config.k2 * expected_z2
+            numerical_derivative - np.asarray(config.velocity_gain) * expected_z2
             - np.asarray(config.position_gain) * position + visual_acceleration
             + target_acceleration,
             abs=1e-8,
@@ -211,10 +237,13 @@ def test_reference_derivative_matches_finite_difference_with_lateral_motion(
 
 @pytest.mark.parametrize('mass', (1.0, 2.3))
 @pytest.mark.parametrize('position_gain', ((0.8, 0.8, 0.8), (0.2, 0.4, 0.8)))
+@pytest.mark.parametrize('velocity_gain', ((0.2, 0.2, 0.2), (0.8, 0.8, 3.0)))
 def test_weighted_lyapunov_identity_includes_full_loop_residuals(
-    mass, position_gain,
+    mass, position_gain, velocity_gain,
 ) -> None:
-    config = replace(CONFIG, mass_kg=mass, position_gain=position_gain)
+    config = replace(
+        CONFIG, mass_kg=mass, position_gain=position_gain, velocity_gain=velocity_gain,
+    )
     gains = np.asarray(position_gain)
     position = np.array((-3.0, -0.4, -0.2))
     velocity = np.array((0.8, -0.3, 0.2))
@@ -257,7 +286,7 @@ def test_weighted_lyapunov_identity_includes_full_loop_residuals(
     )
     expected_v_dot = (
         -(config.k1 + config.v_c / distance) * position_quadratic
-        - config.k2 * (outer.z2_e @ outer.z2_e)
+        - outer.z2_e @ (np.asarray(config.velocity_gain) * outer.z2_e)
         - mass * w @ inner.omega_d_b
         + outer.z2_e @ acceleration_error - mass * w @ rate_error
         - mass * attitude_error @ desired_rate_b
@@ -332,7 +361,7 @@ def test_rate_saturation_preserves_direction_and_limits_norm() -> None:
 
 
 def test_thrust_is_clipped_without_changing_desired_direction() -> None:
-    low_limit = OuterLoopConfig(0.1, 0.2, 0.3, 2.0, 1.0)
+    low_limit = OuterLoopConfig(0.1, (0.2, 0.2, 0.2), 0.3, 2.0, 1.0)
     result = compute_outer_loop(
         (-10.0, 0.0, 0.0),
         (1.0, 0.0, 0.0),

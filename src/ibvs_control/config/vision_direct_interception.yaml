@@ -1,6 +1,6 @@
 vision_interception_coordinator:
   ros__parameters:
-    # 调参建议：先标定物理参数，再调视觉搜索，最后小步调整paper_k1/k2。
+    # 调参建议：先标定物理参数，再调视觉搜索，最后小步调整位置/速度增益。
     # 每次只改一组参数，并保留rosbag用于对比。
     # 使用Gazebo仿真时钟。
     use_sim_time: true
@@ -84,10 +84,10 @@ vision_interception_coordinator:
     altitude_tolerance_m: 0.15
     # 起飞垂直速度容限，单位m/s。
     vertical_speed_tolerance_m_s: 0.30
-    # 整机最终倾角保护(deg)，应高于interception_tilt_limit_deg。
+    # 整机最终倾角保护(deg)。
     max_tilt_deg: 60.0
 
-    # k1、k2、v_c、Barrier边界、设计视线、角速度上限和最大推力统一在
+    # k1、位置/速度增益、v_c、Barrier边界、设计视线及执行器参数统一在
     # design_parameters.yaml中调整。
     # 相机到FLU机体系旋转矩阵，按行展开；相机安装不变时勿调。
     camera_to_body_rotation: [0.0, 0.0, 1.0,
@@ -133,10 +133,6 @@ vision_interception_coordinator:
     interception_telemetry_timeout_s: 0.5
     # 拦截控制指令允许的最大延迟(s)，超时触发安全终止。
     command_timeout_s: 0.20
-    # 拦截阶段最大飞行速度，超过后触发安全中止，单位m/s。
-    speed_limit_m_s: 21.0
-    # 拦截阶段最大倾角，超过后触发安全中止，单位deg。
-    interception_tilt_limit_deg: 55.0
     # 碰撞后保持原速度时间(s)，用于越过目标；过长会增加飞行距离。
     post_hit_coast_duration_s: 0.20
     # 平滑减速时间(s)；增大减速更柔和，但恢复更慢。
