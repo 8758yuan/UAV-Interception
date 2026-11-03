@@ -104,6 +104,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
             k1=self._float_parameter('paper_k1'),
             velocity_gain=tuple(self.get_parameter('velocity_gain').value),
             v_c=self._float_parameter('v_c'),
+            visual_l_m=self._float_parameter('visual_l_m'),
             position_gain=tuple(self.get_parameter('position_gain').value),
             k_b=self.k_b,
             mass_kg=self._float_parameter('mass_kg'),
@@ -418,6 +419,7 @@ class VisionInterceptionCoordinator(OffboardTakeoff):
         self.declare_parameter('paper_k1', 0.05)
         self.declare_parameter('velocity_gain', [0.8, 0.8, 3.0])
         self.declare_parameter('v_c', 0.5)
+        self.declare_parameter('visual_l_m', 10.0)
         self.declare_parameter('position_gain', [0.05, 0.05, 1.0])
         self.declare_parameter('designed_los_pitch_deg', 0.0)
         self.declare_parameter(

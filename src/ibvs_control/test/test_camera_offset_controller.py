@@ -62,7 +62,8 @@ def test_camera_barrier_derivative_and_reference_drift(offset, camera_range):
     )
     barrier_rotation_e = rotation @ outer.omega1_b - reference_rate_e
     expected = (
-        -visual_acceleration @ velocity / CONFIG.mass_kg
+        -visual_acceleration @ velocity
+        / (CONFIG.mass_kg * (1.0 + camera_range / CONFIG.visual_l_m))
         - barrier_rotation_e @ rotation @ rate
     )
 
@@ -129,6 +130,8 @@ def test_offset_lyapunov_identity_retains_actuator_and_attitude_residuals(
                   + scale * attitude_error) @ reference_rate_b
         + outer.z2_e @ (acceleration - outer.acceleration_d_e)
         - mass * w @ rate_error - mass * attitude_error @ desired_rate_b
+        - mass * outer.z1 / (CONFIG.k_b**2 - outer.z1**2) / CONFIG.visual_l_m
+        * outer.z2_e @ (np.eye(3) - np.outer(los, los)) @ rotation[:, 0]
     )
 
     def candidate(p, v, r, rd):

@@ -7,8 +7,6 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -31,35 +29,18 @@ def generate_launch_description() -> LaunchDescription:
         PythonLaunchDescriptionSource(base_launch),
         launch_arguments={
             'world': world,
+            'moving_target': 'true',
+            'target_pattern': pattern,
+            'target_speed_m_s': target_speed,
+            'figure8_radius_x_m': radius_x,
+            'figure8_radius_y_m': radius_y,
+            'target_tilt_deg': LaunchConfiguration('target_tilt_deg'),
             'target_x': target_x,
             'target_y': target_y,
             'target_z': target_z,
             'vehicle_model_name': model_name,
             'device': LaunchConfiguration('device'),
         }.items(),
-    )
-    mover = Node(
-        package='ibvs_sim',
-        executable='paper_moving_target',
-        name='paper_moving_target',
-        output='screen',
-        parameters=[{
-            'use_sim_time': True,
-            'world_name': world,
-            'model_name': 'ibvs_target',
-            'pattern': pattern,
-            'origin_x_m': ParameterValue(target_x, value_type=float),
-            'origin_y_m': ParameterValue(target_y, value_type=float),
-            'origin_z_m': ParameterValue(target_z, value_type=float),
-            'speed_m_s': ParameterValue(target_speed, value_type=float),
-            'radius_x_m': ParameterValue(radius_x, value_type=float),
-            'radius_y_m': ParameterValue(radius_y, value_type=float),
-            'tilt_deg': ParameterValue(
-                LaunchConfiguration('target_tilt_deg'), value_type=float
-            ),
-            'update_rate_hz': 100.0,
-            'start_on_observer_reset': False,
-        }],
     )
     return LaunchDescription([
         DeclareLaunchArgument('world', default_value='default'),
@@ -76,5 +57,4 @@ def generate_launch_description() -> LaunchDescription:
             'vehicle_model_name', default_value='x500_mono_cam_0'
         ),
         vision_and_target,
-        mover,
     ])

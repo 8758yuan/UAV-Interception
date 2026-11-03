@@ -16,6 +16,7 @@ class OuterLoopConfig:
     with the componentwise position feedback in the velocity error equation.
     velocity_gain contains the positive ENU x/y/z velocity error gains.
     v_c is the positive constant closing-speed component in m/s.
+    visual_l_m is L in the visual-acceleration weight (1 + camera_range / L).
     """
 
     k1: float
@@ -26,6 +27,7 @@ class OuterLoopConfig:
     gravity_m_s2: float = 9.80665
     position_gain: tuple[float, float, float] = (1.0, 1.0, 1.0)
     v_c: float = 0.5
+    visual_l_m: float = 10.0
 
     def validate(self) -> None:
         """Reject nonphysical gains and limits."""
@@ -36,6 +38,8 @@ class OuterLoopConfig:
             raise ValueError(
                 'k1, k_b, mass_kg, and v_c must be positive'
             )
+        if not math.isfinite(self.visual_l_m) or self.visual_l_m <= 0.0:
+            raise ValueError('visual_l_m must be finite and positive')
         position_gain = _vector3(self.position_gain, 'position_gain')
         if np.any(position_gain <= 0.0):
             raise ValueError('position_gain components must be positive')
@@ -153,7 +157,8 @@ def compute_outer_loop(
         velocity_d_dot
         - np.asarray(config.velocity_gain) * z2
         - np.asarray(config.position_gain) * p_r
-        + barrier_gain * config.mass_kg / camera_distance_m * visual_direction
+        + barrier_gain * config.mass_kg
+        * (1.0 / camera_distance_m + 1.0 / config.visual_l_m) * visual_direction
         + a_target
     )
     gravity = np.array((0.0, 0.0, -config.gravity_m_s2))

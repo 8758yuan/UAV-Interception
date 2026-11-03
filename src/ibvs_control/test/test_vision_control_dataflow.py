@@ -80,16 +80,17 @@ def test_simulation_target_does_not_publish_odometry() -> None:
     assert 'nav_msgs/msg/Odometry' not in launch
 
 
-def test_moving_target_is_confined_to_gazebo_set_pose() -> None:
+def test_moving_target_is_confined_to_gazebo_physics() -> None:
     """The paper trajectory may move the plant but cannot feed the algorithm."""
     sim_root = Path(__file__).parents[2] / 'ibvs_sim'
-    mover = (sim_root / 'ibvs_sim' / 'paper_moving_target.py').read_text(
+    mover = (sim_root.parent / 'ibvs_sim_physics' / 'src' / 'paper_target_system.cc').read_text(
         encoding='utf-8'
     )
     launch = (sim_root / 'launch' / 'p7_moving_target.launch.py').read_text(
         encoding='utf-8'
     )
-    assert "set_pose_service = f'/world/{world_name}/set_pose'" in mover
+    assert 'SetLinearVelocity' in mover
+    assert 'set_pose' not in mover
     assert 'Odometry' not in mover
     assert 'Publisher' not in mover
     assert "default_value='circle'" in launch
@@ -138,6 +139,7 @@ def test_flight_gains_have_finite_positive_axis_configuration() -> None:
         gains = parameters[name]
         assert len(gains) == 3
         assert all(math.isfinite(value) and value > 0.0 for value in gains)
+    assert math.isfinite(parameters['visual_l_m']) and parameters['visual_l_m'] > 0.0
 
 
 def test_observer_uses_only_onboard_imu_attitude_and_image() -> None:
@@ -201,6 +203,7 @@ def test_paper_design_parameters_have_one_configuration_source() -> None:
         'paper_k1',
         'velocity_gain',
         'v_c',
+        'visual_l_m',
         'position_gain',
         'safe_los_angle_deg',
         'designed_los_pitch_deg',

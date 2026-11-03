@@ -198,6 +198,19 @@ def test_ros_closing_speed_parameter_reaches_outer_loop() -> None:
             rclpy.shutdown()
 
 
+def test_ros_visual_length_parameter_reaches_outer_loop() -> None:
+    rclpy.init(args=['--ros-args', '-p', 'visual_l_m:=2.5'])
+    node = None
+    try:
+        node = VisionInterceptionCoordinator()
+        assert node.paper_config.visual_l_m == pytest.approx(2.5)
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
 def test_ros_position_gain_vector_reaches_outer_loop() -> None:
     rclpy.init(args=['--ros-args', '-p', 'position_gain:=[0.2,0.3,0.8]'])
     node = None

@@ -1,13 +1,16 @@
 """Tests for the paper moving target confined to the Gazebo plant."""
 
 import math
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+import xml.etree.ElementTree as ET
 
+from launch import LaunchContext
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.utilities import normalize_to_list_of_substitutions, perform_substitutions
 import pytest
 
-from ibvs_sim.paper_moving_target import (
-    PaperTargetTrajectory,
-    _pose_request,
-)
+from ibvs_sim.paper_moving_target import PaperTargetTrajectory
 
 
 @pytest.mark.parametrize('pattern', ('figure8', 'circle'))
@@ -46,20 +49,46 @@ def test_figure8_is_periodic_and_crosses_its_origin() -> None:
     )
 
 
-def test_pose_request_contains_no_velocity_or_ros_truth_interface() -> None:
-    trajectory = PaperTargetTrajectory(
-        pattern='figure8',
-        origin=(12.0, 0.0, 3.0),
-        speed_m_s=10.0,
-        radius_x_m=4.0,
-        radius_y_m=2.0,
-    )
-    sample = trajectory.sample(0.25)
-    request = _pose_request('ibvs_target', sample)
-    assert request.name == 'ibvs_target'
-    assert request.position.x == pytest.approx(sample.position[0])
-    assert request.position.z == pytest.approx(3.0)
-    assert request.orientation.w**2 + request.orientation.z**2 == pytest.approx(1.0)
+@pytest.mark.parametrize('pattern', ('static', 'circle', 'figure8'))
+def test_scenario_spawns_exactly_one_motion_driver_only_for_moving_targets(pattern):
+    launch_root = Path(__file__).parents[1] / 'launch'
+    path = launch_root / ('p4_vision_monitor.launch.py' if pattern == 'static'
+                          else 'p7_moving_target.launch.py')
+    spec = spec_from_file_location('target_launch', path)
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    context = LaunchContext()
+    description = module.generate_launch_description()
+    for action in description.entities:
+        if isinstance(action, DeclareLaunchArgument):
+            action.execute(context)
+    context.launch_configurations['target_pattern'] = pattern
+    if pattern != 'static':
+        include, = [action for action in description.entities
+                    if isinstance(action, IncludeLaunchDescription)]
+        for name, value in include.launch_arguments:
+            context.launch_configurations[name] = perform_substitutions(
+                context, normalize_to_list_of_substitutions(value))
+        spec = spec_from_file_location('target_base_launch', launch_root / 'p4_vision_monitor.launch.py')
+        module = module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for action in module.generate_launch_description().entities:
+            if isinstance(action, DeclareLaunchArgument):
+                action.execute(context)
+    target, = module.spawn_target(context)
+    command = (perform_substitutions(context, normalize_to_list_of_substitutions(part))
+               for part in target.cmd)
+    next(argument for argument in command if argument == '-string')
+    model = ET.fromstring(next(command)).find('model')
+    plugins = model.findall('plugin')
+    if pattern == 'static':
+        assert plugins == []
+    else:
+        plugin, = plugins
+        assert plugin.get('name') == 'ibvs_sim_physics::PaperTargetSystem'
+        assert Path(plugin.get('filename')).is_file()
+        assert plugin.findtext('target_pattern') == pattern
+        assert float(plugin.findtext('target_speed_m_s')) == 5.0
 
 
 def test_invalid_moving_target_configuration_is_rejected() -> None:

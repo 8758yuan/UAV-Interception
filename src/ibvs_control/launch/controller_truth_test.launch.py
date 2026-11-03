@@ -18,7 +18,7 @@ import yaml
 
 
 def spawn_physics_probe(context):
-    """Load the native exporter and optional target driver only in this test."""
+    """Load the read-only native exporter; the scenario owns target motion."""
     def value(name):
         return LaunchConfiguration(name).perform(context)
 
@@ -34,10 +34,6 @@ def spawn_physics_probe(context):
     parameters = {
         'vehicle_model': value('vehicle_model_name'), 'target_model': 'ibvs_target',
         'topic': f'/world/{world}/controller_test/state',
-        'moving_target': value('moving_target'), 'target_pattern': value('target_pattern'),
-        'target_speed_m_s': value('target_speed_m_s'),
-        'radius_x_m': value('figure8_radius_x_m'), 'radius_y_m': value('figure8_radius_y_m'),
-        'target_tilt_deg': value('target_tilt_deg'),
     }
     for name, parameter in parameters.items():
         ET.SubElement(plugin, name).text = parameter
@@ -112,12 +108,6 @@ def generate_launch_description():
         DeclareLaunchArgument('trial_id', default_value='controller_truth_01'),
         DeclareLaunchArgument('world', default_value='default'),
         DeclareLaunchArgument('vehicle_model_name', default_value='x500_mono_cam_0'),
-        DeclareLaunchArgument('moving_target', default_value='false'),
-        DeclareLaunchArgument('target_pattern', default_value='circle'),
-        DeclareLaunchArgument('target_speed_m_s', default_value='4.0'),
-        DeclareLaunchArgument('figure8_radius_x_m', default_value='6.0'),
-        DeclareLaunchArgument('figure8_radius_y_m', default_value='6.0'),
-        DeclareLaunchArgument('target_tilt_deg', default_value='45.0'),
         DeclareLaunchArgument(
             'results_directory',
             default_value=os.path.expanduser('~/ibvs_ws/results/controller_truth'),

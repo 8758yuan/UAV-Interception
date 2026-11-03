@@ -10,6 +10,7 @@
   <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>ibvs_perception</exec_depend>
+  <exec_depend>ibvs_sim_physics</exec_depend>
   <exec_depend>python3-gz-msgs10</exec_depend>
   <exec_depend>python3-gz-transport13</exec_depend>
   <exec_depend>launch</exec_depend>

@@ -206,7 +206,9 @@ def test_test_launch_isolates_truth_topic_and_preserves_controller_parameters():
             action.execute(context)
     nodes = {action.node_executable: action for action in description.entities
              if isinstance(action, Node)}
-    assert set(nodes) == {'controller_truth_state', 'controller_truth_coordinator'}
+    assert set(nodes) == {
+        'controller_truth_state', 'controller_truth_coordinator', 'acceleration_recorder',
+    }
     truth, = evaluate_parameters(context, nodes['controller_truth_state']._Node__parameters)
     controller = {}
     for value in evaluate_parameters(
@@ -239,8 +241,7 @@ def test_test_launch_isolates_truth_topic_and_preserves_controller_parameters():
     assert str(output) in command
 
 
-@pytest.mark.parametrize('moving', ('false', 'true'))
-def test_native_probe_uses_the_test_library_and_requested_trajectory(moving):
+def test_native_probe_only_reads_physics_and_does_not_drive_target():
     path = Path(__file__).parents[1] / 'launch' / 'controller_truth_test.launch.py'
     spec = spec_from_file_location('controller_probe_launch', path)
     module = module_from_spec(spec)
@@ -249,7 +250,6 @@ def test_native_probe_uses_the_test_library_and_requested_trajectory(moving):
     for action in module.generate_launch_description().entities:
         if isinstance(action, DeclareLaunchArgument):
             action.execute(context)
-    context.launch_configurations['moving_target'] = moving
     probe, = module.spawn_physics_probe(context)
     assert probe.node_executable == 'create'
     command = (perform_substitutions(context, normalize_to_list_of_substitutions(part))
@@ -259,11 +259,8 @@ def test_native_probe_uses_the_test_library_and_requested_trajectory(moving):
     plugin = sdf.find('model/plugin')
     assert Path(plugin.get('filename')).is_file()
     assert plugin.get('name') == 'ibvs_controller_test::ControllerTruthSystem'
-    assert plugin.findtext('moving_target') == moving
     assert plugin.findtext('topic') == '/world/default/controller_test/state'
-    assert plugin.findtext('target_pattern') == 'circle'
-    assert float(plugin.findtext('target_speed_m_s')) == 4.0
-    assert float(plugin.findtext('radius_x_m')) == 6.0
+    assert {field.tag for field in plugin} == {'vehicle_model', 'target_model', 'topic'}
 
 
 @pytest.mark.parametrize('filename', [

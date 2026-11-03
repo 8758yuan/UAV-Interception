@@ -176,6 +176,55 @@ def test_closing_speed_must_be_finite_and_positive(v_c) -> None:
         replace(CONFIG, v_c=v_c).validate()
 
 
+@pytest.mark.parametrize('length', (0.0, -1.0, math.nan, math.inf))
+def test_visual_length_must_be_finite_and_positive(length) -> None:
+    with pytest.raises(ValueError, match='visual_l_m'):
+        replace(CONFIG, visual_l_m=length).validate()
+
+
+@pytest.mark.parametrize('length', (0.5, 10.0, 100.0))
+@pytest.mark.parametrize('camera_range', (0.5, 10.0))
+@pytest.mark.parametrize('offset', ((0.0, 0.0, 0.0), (0.14, 0.03, 0.1)))
+@pytest.mark.parametrize('angle', (0.0, 0.2))
+def test_visual_weight_uses_camera_range_and_scales_only_visual_acceleration(
+    length, camera_range, offset, angle,
+) -> None:
+    config = replace(CONFIG, visual_l_m=length)
+    rotation = rodrigues((0.2, -0.3, 0.4), 0.35)
+    los = rotation @ np.array((math.cos(angle), math.sin(angle), 0.0))
+    designed = rotation[:, 0]
+    position = -rotation @ np.asarray(offset) - camera_range * los
+    velocity = np.array((0.2, -0.1, 0.3))
+    target_acceleration = np.array((0.1, -0.2, 0.05))
+    args = (position, velocity, los, designed, rotation)
+    kwargs = dict(camera_position_b_m=offset, target_acceleration_e=target_acceleration)
+    outer = compute_outer_loop(*args, config, **kwargs)
+    adjusted = compute_outer_loop(*args, replace(config, visual_l_m=2 * length), **kwargs)
+    distance = np.linalg.norm(position)
+    radial = -position / distance
+    reference_dot = (
+        -config.k1 * velocity
+        - config.v_c / distance * (velocity - radial * (radial @ velocity))
+    )
+    nonvisual = (
+        reference_dot - np.asarray(config.velocity_gain) * outer.z2_e
+        - np.asarray(config.position_gain) * position + target_acceleration
+    )
+    z1 = 1.0 - math.cos(angle)
+    original_visual = (
+        z1 / (config.k_b**2 - z1**2) * config.mass_kg / camera_range
+        * (-np.eye(3) + np.outer(los, los)) @ designed
+    )
+    assert outer.acceleration_d_e - nonvisual == pytest.approx(
+        (1.0 + camera_range / length) * original_visual, abs=1e-12,
+    )
+    assert adjusted.acceleration_d_e - nonvisual == pytest.approx(
+        (1.0 + camera_range / (2 * length)) * original_visual, abs=1e-12,
+    )
+    assert adjusted.z2_e == pytest.approx(outer.z2_e)
+    assert adjusted.omega1_b == pytest.approx(outer.omega1_b)
+
+
 @pytest.mark.parametrize('distance', (10.0, 0.1, 1e-5))
 def test_radial_reference_keeps_constant_closing_component(distance) -> None:
     velocity = np.array((0.3, 0.0, 0.0))
@@ -223,7 +272,8 @@ def test_reference_derivative_matches_finite_difference_with_lateral_motion(
         expected_z2 = velocity - reference(position)
         barrier = outer.z1 / (config.k_b**2 - outer.z1**2)
         visual_acceleration = (
-            barrier * config.mass_kg / np.linalg.norm(position)
+            barrier * config.mass_kg
+            * (1.0 / np.linalg.norm(position) + 1.0 / config.visual_l_m)
             * (-np.eye(3) + np.outer(los, los)) @ designed
         )
         assert outer.z2_e == pytest.approx(expected_z2)
@@ -290,6 +340,7 @@ def test_weighted_lyapunov_identity_includes_full_loop_residuals(
         - mass * w @ inner.omega_d_b
         + outer.z2_e @ acceleration_error - mass * w @ rate_error
         - mass * attitude_error @ desired_rate_b
+        - mass * barrier / config.visual_l_m * outer.z2_e @ projection @ designed
     )
     assert actual_v_dot == pytest.approx(expected_v_dot, abs=1e-10)
 

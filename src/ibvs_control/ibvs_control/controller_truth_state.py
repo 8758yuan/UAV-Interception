@@ -34,7 +34,7 @@ class ControllerTruthState(Node):
             self.declare_parameter(name, value)
         config = {name: self.get_parameter(name).value for name in defaults}
         self.stop_motion = bool(config['stop_motion_on_shutdown'])
-        self.stop_service = f"/world/{config['world_name']}/controller_test/stop"
+        self.stop_service = f"/world/{config['world_name']}/paper_target/stop"
         self.rotation = np.asarray(config['camera_to_body_rotation']).reshape(3, 3)
         self.position = np.asarray(config['camera_position_b_m'])
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)

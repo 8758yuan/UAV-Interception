@@ -1,21 +1,64 @@
 """Spawn the target and start YOLO detection on the forward camera."""
 
 import os
+import xml.etree.ElementTree as ET
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler
+from launch.event_handlers import OnShutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
+def spawn_target(context):
+    """Attach the sole physical motion driver when spawning a moving target."""
+    def value(name):
+        return LaunchConfiguration(name).perform(context)
+
+    path = os.path.join(get_package_share_directory('ibvs_sim'),
+                        'target_models', 'static_target.sdf')
+    sdf = ET.parse(path).getroot()
+    if value('moving_target').lower() == 'true':
+        library = os.path.join(get_package_prefix('ibvs_sim_physics'),
+                               'lib', 'libpaper_target_system.so')
+        plugin = ET.SubElement(sdf.find('model'), 'plugin', filename=library,
+                               name='ibvs_sim_physics::PaperTargetSystem')
+        parameters = {
+            'vehicle_model': value('vehicle_model_name'),
+            'target_pattern': value('target_pattern'),
+            'target_speed_m_s': value('target_speed_m_s'),
+            'radius_x_m': value('figure8_radius_x_m'),
+            'radius_y_m': value('figure8_radius_y_m'),
+            'target_tilt_deg': value('target_tilt_deg'),
+        }
+        for name, parameter in parameters.items():
+            ET.SubElement(plugin, name).text = parameter
+    return [Node(
+        package='ros_gz_sim', executable='create', name='spawn_ibvs_target',
+        arguments=['-world', value('world'), '-string', ET.tostring(sdf, encoding='unicode'),
+                   '-name', 'ibvs_target', '-x', value('target_x'),
+                   '-y', value('target_y'), '-z', value('target_z')],
+        output='screen',
+    )]
+
+
+def stop_target(context):
+    """Release the trajectory command when the scenario launch exits."""
+    if LaunchConfiguration('moving_target').perform(context).lower() == 'true':
+        from gz.msgs10.boolean_pb2 import Boolean
+        from gz.msgs10.empty_pb2 import Empty
+        from gz.transport13 import Node as GazeboNode
+
+        world = LaunchConfiguration('world').perform(context)
+        GazeboNode().request(f'/world/{world}/paper_target/stop', Empty(), Empty, Boolean, 100)
+    return []
+
+
 def generate_launch_description() -> LaunchDescription:
     """Compose target contact feedback and image features."""
     world = LaunchConfiguration('world')
-    target_x = LaunchConfiguration('target_x')
-    target_y = LaunchConfiguration('target_y')
-    target_z = LaunchConfiguration('target_z')
     model_name = LaunchConfiguration('vehicle_model_name')
     image_delay = LaunchConfiguration('image_delay_s')
     model_path = LaunchConfiguration('model_path')
@@ -31,11 +74,6 @@ def generate_launch_description() -> LaunchDescription:
         '/world/', world, '/model/', model_name,
         '/link/camera_link/sensor/camera/camera_info',
     ]
-    target_model = os.path.join(
-        get_package_share_directory('ibvs_sim'),
-        'target_models',
-        'static_target.sdf',
-    )
     clock_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -51,20 +89,6 @@ def generate_launch_description() -> LaunchDescription:
             '/world/default/model/ibvs_target/link/target_link/sensor/'
             'target_contact/contact@ros_gz_interfaces/msg/Contacts'
             '[gz.msgs.Contacts',
-        ],
-        output='screen',
-    )
-    spawn_target = Node(
-        package='ros_gz_sim',
-        executable='create',
-        name='spawn_ibvs_target',
-        arguments=[
-            '-world', world,
-            '-file', target_model,
-            '-name', 'ibvs_target',
-            '-x', target_x,
-            '-y', target_y,
-            '-z', target_z,
         ],
         output='screen',
     )
@@ -117,6 +141,12 @@ def generate_launch_description() -> LaunchDescription:
             # acquisition scan, so this value is intentionally independent of
             # the controller's initial takeoff altitude.
             DeclareLaunchArgument('target_z', default_value='4.0'),
+            DeclareLaunchArgument('moving_target', default_value='false'),
+            DeclareLaunchArgument('target_pattern', default_value='circle'),
+            DeclareLaunchArgument('target_speed_m_s', default_value='5.0'),
+            DeclareLaunchArgument('figure8_radius_x_m', default_value='6.0'),
+            DeclareLaunchArgument('figure8_radius_y_m', default_value='6.0'),
+            DeclareLaunchArgument('target_tilt_deg', default_value='45.0'),
             DeclareLaunchArgument(
                 'vehicle_model_name', default_value='x500_mono_cam_0'
             ),
@@ -143,7 +173,8 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument('device', default_value=''),
             clock_bridge,
             contact_bridge,
-            spawn_target,
+            OpaqueFunction(function=spawn_target),
+            RegisterEventHandler(OnShutdown(on_shutdown=[OpaqueFunction(function=stop_target)])),
             contact_indicator,
             camera_bridge,
             detector,

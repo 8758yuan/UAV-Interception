@@ -2,7 +2,7 @@
 <package format="3">
   <name>ibvs_controller_test</name>
   <version>0.1.0</version>
-  <description>Gazebo physics snapshots and target motion for controller tests only.</description>
+  <description>Read-only Gazebo physics snapshots for controller tests.</description>
   <maintainer email="yuan@example.com">yuan</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
