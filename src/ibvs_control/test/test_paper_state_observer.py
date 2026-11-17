@@ -232,12 +232,14 @@ def test_image_state_block_matches_equation_54() -> None:
     assert jacobian == pytest.approx(numerical, abs=1e-8)
 
 
-def test_image_position_and_attitude_blocks_follow_paper_fixed_depth() -> None:
-    observer = PaperStateObserver()
+@pytest.mark.parametrize('depth', (0.5, 9.0))
+@pytest.mark.parametrize('offset', ((0.0, 0.0, 0.0), (0.12, -0.03, 0.2)))
+def test_image_position_and_attitude_blocks_include_depth_derivatives(depth, offset):
+    observer = PaperStateObserver(ObserverConfig(camera_position_b_m=offset))
     observer.initialize_from_image(
         (0.98, 0.02, 0.1, -0.02),
         (0.13, -0.07),
-        9.0,
+        depth,
         initial_v_r_e=(0.8, -0.5, 0.2),
     )
     state = observer.snapshot().state.as_vector()
@@ -245,25 +247,92 @@ def test_image_position_and_attitude_blocks_follow_paper_fixed_depth() -> None:
     accel = np.array((0.0, 0.0, GRAVITY))
     dt_s = 0.01
     _, F, _ = observer._appendix_prediction(state, gyro, accel, dt_s)
-    assert np.array_equal(F[IMAGE_SLICE, P_R_SLICE], np.zeros((2, 3)))
-    q = state[Q_SLICE]
-    image_x, image_y = state[IMAGE_SLICE]
-    translation = np.array(((-1.0, 0.0, image_x), (0.0, -1.0, image_y))) / 9.0
-    numerical = np.zeros((2, 4))
     epsilon = 1e-7
-    for index in range(4):
-        offset = np.zeros(4)
-        offset[index] = epsilon
-        plus = _quaternion_to_rotation(q + offset)
-        minus = _quaternion_to_rotation(q - offset)
-        # Equation (52) differentiates rotation while holding depth fixed.
-        numerical[:, index] = (
-            translation @ observer._r_c_to_b.T @ (plus - minus).T
-            @ state[V_R_SLICE] * dt_s / (2.0 * epsilon)
-        )
-    assert F[IMAGE_SLICE, Q_SLICE] == pytest.approx(
-        numerical, abs=1e-10
+    for column in range(P_R_SLICE.stop):
+        delta = np.zeros(STATE_DIM)
+        delta[column] = epsilon
+        plus = observer._appendix_prediction(state + delta, gyro, accel, dt_s)[0]
+        minus = observer._appendix_prediction(state - delta, gyro, accel, dt_s)[0]
+        numerical = (plus[IMAGE_SLICE] - minus[IMAGE_SLICE]) / (2.0 * epsilon)
+        assert F[IMAGE_SLICE, column] == pytest.approx(numerical, abs=1e-9)
+    assert np.linalg.norm(F[IMAGE_SLICE, P_R_SLICE]) > 0.0
+
+
+@pytest.mark.parametrize('capture_offset_ns, boundary', (
+    (12_000_000, 1), (38_000_000, 4), (60_000_000, 6),
+))
+def test_capture_time_selects_imu_boundary_beyond_nominal_d(capture_offset_ns, boundary):
+    """Match an independently timed update without splitting IMU noise."""
+    config = ObserverConfig(dkf_delay_steps=1, camera_position_b_m=(0.14, 0.0, 0.0))
+    delayed, reference = (PaperStateObserver(config) for _ in range(2))
+    for observer in (delayed, reference):
+        observer.initialize_from_image((1.0, 0.0, 0.0, 0.0), (0.01, -0.02), 12.0)
+    samples = [
+        ((0.02 * i, -0.01, 0.03), (0.1 * i, -0.1, GRAVITY), 0.01)
+        for i in range(6)
+    ]
+    origin = 1_790_000_000_000_000_000
+    measurement = (0.03, -0.01)
+    for i, sample in enumerate(samples):
+        if i == boundary:
+            reference.correct_image(measurement)
+        reference.predict(*sample)
+        delayed.predict(*sample, timestamp_ns=origin + i * 10_000_000)
+        if i % 2 == 1:
+            delayed.complete_dkf_cycle()
+    if boundary == len(samples):
+        reference.correct_image(measurement)
+    actual = delayed.correct_delayed_image(
+        measurement, capture_timestamp_ns=origin + capture_offset_ns,
     )
+    assert actual.state.as_vector() == pytest.approx(reference.x, abs=1e-12)
+    assert actual.covariance == pytest.approx(reference.P, abs=1e-12)
+    assert actual.prediction_count == 6
+    assert actual.correction_count == 1
+
+
+def test_capture_updates_preserve_replayed_history_and_failed_update(monkeypatch):
+    """A later capture uses the first correction; a failed replay stays atomic."""
+    from copy import deepcopy
+
+    config = ObserverConfig(dkf_delay_steps=1)
+    delayed, reference = (PaperStateObserver(config) for _ in range(2))
+    for observer in (delayed, reference):
+        observer.initialize_from_image((1.0, 0.0, 0.0, 0.0), (0.0, 0.0), 12.0)
+    sample = ((0.02, -0.01, 0.03), (0.1, -0.1, GRAVITY), 0.01)
+    for i in range(6):
+        if i in (1, 3):
+            reference.correct_image((0.01 * i, -0.005))
+        reference.predict(*sample)
+        delayed.predict(*sample, timestamp_ns=1_000_000_000 + i * 10_000_000)
+        delayed.complete_dkf_cycle()
+    delayed.correct_delayed_image((0.01, -0.005), capture_timestamp_ns=1_010_000_000)
+    before = deepcopy(delayed)
+    with monkeypatch.context() as fault:
+        def fail(*args):
+            raise ValueError('replay failed')
+        fault.setattr(delayed, '_predict_arrays', fail)
+        with pytest.raises(ValueError, match='replay failed'):
+            delayed.correct_delayed_image(
+                (0.03, -0.005), capture_timestamp_ns=1_030_000_000,
+            )
+    assert delayed.x == pytest.approx(before.x)
+    assert delayed.P == pytest.approx(before.P)
+    assert delayed.history_span_ns == before.history_span_ns
+    assert delayed.correction_count == before.correction_count
+    delayed.correct_delayed_image((0.03, -0.005), capture_timestamp_ns=1_030_000_000)
+    assert delayed.x == pytest.approx(reference.x, abs=1e-12)
+    assert delayed.P == pytest.approx(reference.P, abs=1e-12)
+
+    before = delayed.snapshot()
+    delayed.discard_history_before(1_050_000_000)
+    assert delayed.history_span_ns == (1_050_000_000, 1_060_000_000)
+    assert delayed.x == pytest.approx(before.state.as_vector())
+    assert delayed.P == pytest.approx(before.covariance)
+    with pytest.raises(RuntimeError, match='outside the available'):
+        delayed.correct_delayed_image(
+            (0.0, 0.0), capture_timestamp_ns=1_040_000_000,
+        )
 
 
 def test_current_image_update_reduces_image_uncertainty() -> None:
@@ -613,7 +682,7 @@ def test_camera_image_remaining_jacobians_include_lever_arm(offset):
     accel = np.array((0.0, 0.0, GRAVITY))
     _, F, G = observer._appendix_prediction(state, gyro, accel, 0.005)
     epsilon = 1e-7
-    # Paper's position/attitude blocks use the fixed-depth approximation above.
+    # Position/attitude, including the depth chain rule, are checked above.
     for column in range(V_R_SLICE.start, STATE_DIM):
         delta = np.zeros(STATE_DIM)
         delta[column] = epsilon

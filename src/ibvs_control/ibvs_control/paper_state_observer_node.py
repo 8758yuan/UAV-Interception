@@ -10,7 +10,7 @@ from interception_interfaces.msg import (
     VisionFeature,
 )
 import numpy as np
-from px4_msgs.msg import SensorCombined, VehicleAttitude
+from px4_msgs.msg import SensorCombined, TimesyncStatus, VehicleAttitude
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -103,6 +103,7 @@ class PaperStateObserverNode(Node):
         self.pending_feature: Optional[VisionFeature] = None
         self.last_imu_timestamp_us: Optional[int] = None
         self.last_queued_imu_timestamp_us: Optional[int] = None
+        self.timesync_offset_us: Optional[int] = None
         self.image_update_count = 0
         self.last_error = ''
 
@@ -124,6 +125,12 @@ class PaperStateObserverNode(Node):
             SensorCombined,
             str(self.get_parameter('imu_topic').value),
             self._imu_callback,
+            sensor_qos,
+        )
+        self.create_subscription(
+            TimesyncStatus,
+            '/fmu/out/timesync_status',
+            self._timesync_callback,
             sensor_qos,
         )
         self.create_subscription(
@@ -154,8 +161,7 @@ class PaperStateObserverNode(Node):
         self.create_timer(1.0 / dkf_update_rate_hz, self._dkf_callback)
         self.get_logger().info(
             f'Paper 18-state DKF ready: {dkf_update_rate_hz:.0f} Hz, '
-            'IMU substeps grouped per update, '
-            f'D={self.observer.config.dkf_delay_steps} DKF periods'
+            'capture-time aligned IMU replay'
         )
 
     def _declare_parameters(self) -> None:
@@ -192,9 +198,8 @@ class PaperStateObserverNode(Node):
         )
         self.declare_parameter('maximum_dt_s', 0.05)
         self.declare_parameter('camera_position_b_m', [0.14, 0.0, 0.0])
-        # The paper's practical DKF runs at 50 Hz and reports about 80 ms of
-        # imaging/processing delay: D = round(0.080 * 50) = 4 DKF periods.
-        # The 200 Hz IMU contributes four propagation substeps per period.
+        # D remains available to untimestamped mathematical callers; online
+        # updates use capture_stamp and the actual IMU history instead.
         self.declare_parameter('dkf_delay_steps', 4)
         self.declare_parameter('dkf_update_rate_hz', 50.0)
         self.declare_parameter('initial_q_std', 0.005)
@@ -213,6 +218,11 @@ class PaperStateObserverNode(Node):
             self.initial_q_b_to_e = rotation_to_quaternion_wxyz(rotation)
         except ValueError as error:
             self._log_error_once(str(error))
+
+    def _timesync_callback(self, message: TimesyncStatus) -> None:
+        """PX4 DDS timestamp + estimated_offset equals simulation time."""
+        if message.source_protocol == TimesyncStatus.SOURCE_PROTOCOL_DDS:
+            self.timesync_offset_us = int(message.estimated_offset)
 
     def _reset_callback(self, _message: Empty) -> None:
         """Reset at the visually authorized start, not during takeoff."""
@@ -373,7 +383,7 @@ class PaperStateObserverNode(Node):
                 self._publish_uninitialized(reason)
 
     def _dkf_callback(self) -> None:
-        """Complete one DKF period, optionally correcting a delayed image."""
+        """Predict, correct at the image's IMU time, and replay to the present."""
         if not self.observer.initialized:
             return
         try:
@@ -385,22 +395,41 @@ class PaperStateObserverNode(Node):
                 self._publish(self.observer.snapshot(), 'imu_predicted')
                 return
             if not feature.valid:
+                if self.timesync_offset_us is not None:
+                    self.observer.discard_history_before(
+                        _stamp_ns(feature.capture_stamp)
+                        - self.timesync_offset_us * 1000
+                    )
                 # Skip this image; the completed IMU prediction remains valid.
                 self._publish(
                     self.observer.snapshot(),
                     feature.reason or 'image_invalid',
                 )
                 return
-            if not self.observer.delay_history_ready:
+            if self.timesync_offset_us is None:
+                self.pending_feature = feature
                 self._publish(
                     self.observer.snapshot(),
-                    'delay_history_warming',
+                    'waiting_for_imu_clock_mapping',
                 )
                 return
+            capture_ns = (
+                _stamp_ns(feature.capture_stamp)
+                - self.timesync_offset_us * 1000
+            )
+            span = self.observer.history_span_ns
+            if span is None or capture_ns > span[1]:
+                self.pending_feature = feature
+                self._publish(self.observer.snapshot(), 'waiting_for_capture_imu')
+                return
+            if capture_ns < span[0]:
+                self._publish(self.observer.snapshot(), 'capture_history_unavailable')
+                return
             image_xy = (float(feature.x_norm), float(feature.y_norm))
-            snapshot = self.observer.correct_delayed_image(image_xy)
-            delay_steps = self.observer.config.dkf_delay_steps
-            self._publish(snapshot, f'image_corrected_d{delay_steps}')
+            snapshot = self.observer.correct_delayed_image(
+                image_xy, capture_timestamp_ns=capture_ns,
+            )
+            self._publish(snapshot, 'image_corrected_capture_time')
         except (RuntimeError, ValueError, np.linalg.LinAlgError) as error:
             reason = str(error)
             self._log_error_once(reason)
@@ -437,6 +466,7 @@ class PaperStateObserverNode(Node):
                 self.last_imu_timestamp_us = timestamp_us
                 continue
             dt_s = (timestamp_us - self.last_imu_timestamp_us) * 1e-6
+            interval_start_ns = self.last_imu_timestamp_us * 1000
             self.last_imu_timestamp_us = timestamp_us
             if dt_s <= 0.0:
                 raise ValueError(
@@ -451,10 +481,15 @@ class PaperStateObserverNode(Node):
                     gyro_b,
                     accel_b,
                     maximum_dt_s,
+                    timestamp_ns=interval_start_ns,
                 )
+                interval_start_ns += int(round(maximum_dt_s * 1e9))
                 remaining_s -= maximum_dt_s
             if remaining_s > 0.0:
-                self.observer.predict(gyro_b, accel_b, remaining_s)
+                self.observer.predict(
+                    gyro_b, accel_b, remaining_s,
+                    timestamp_ns=interval_start_ns,
+                )
 
     def _publish(
         self,

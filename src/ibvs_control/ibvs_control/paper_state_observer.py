@@ -1,5 +1,6 @@
-"""18-state delayed Kalman observer from the paper's Appendix B and C."""
+"""18-state DKF with depth chain-rule derivatives and timestamped IMU replay."""
 
+from copy import deepcopy
 from dataclasses import dataclass
 import math
 from typing import Sequence, Tuple
@@ -141,6 +142,7 @@ class _PredictionRecord:
     gyro: np.ndarray
     accel: np.ndarray
     dt_s: float
+    timestamp_ns: int | None = None
 
 
 @dataclass
@@ -175,6 +177,7 @@ class PaperStateObserver:
         self._pending_predictions: list[_PredictionRecord] = []
         self._pending_prior_x: np.ndarray | None = None
         self._pending_prior_covariance: np.ndarray | None = None
+        self._timestamp_ns: int | None = None
         self._gravity = np.asarray(config.gravity_e, dtype=float)
         self._r_c_to_b = np.asarray(
             config.camera_to_body_rotation,
@@ -319,8 +322,10 @@ class PaperStateObserver:
         gyro_rad_s_b: Sequence[float],
         accel_m_s2_b: Sequence[float],
         dt_s: float,
+        *,
+        timestamp_ns: int | None = None,
     ) -> ObserverSnapshot:
-        """Apply paper (44)-(55), then covariance equations (30)-(31)."""
+        """Predict; timestamp_ns, when supplied, marks the interval's start."""
         x, covariance = self._require_state()
         gyro = _finite_vector(gyro_rad_s_b, 3, 'gyro_rad_s_b')
         accel = _finite_vector(accel_m_s2_b, 3, 'accel_m_s2_b')
@@ -333,7 +338,14 @@ class PaperStateObserver:
                 f'dt_s must be within (0, {self.config.maximum_dt_s}]'
             )
 
-        if self.config.dkf_delay_steps > 0:
+        if timestamp_ns is not None and (
+            not isinstance(timestamp_ns, int) or timestamp_ns < 0
+        ):
+            raise ValueError('timestamp_ns must be a nonnegative integer')
+        predicted, predicted_covariance, F, G = self._predict_arrays(
+            x, covariance, gyro, accel, dt_s,
+        )
+        if self.config.dkf_delay_steps > 0 or timestamp_ns is not None:
             if self._pending_prior_x is None:
                 self._pending_prior_x = x.copy()
                 self._pending_prior_covariance = covariance.copy()
@@ -344,19 +356,15 @@ class PaperStateObserver:
                     gyro=gyro.copy(),
                     accel=accel.copy(),
                     dt_s=dt_s,
+                    timestamp_ns=timestamp_ns,
                 )
             )
-        predicted, predicted_covariance, F, G = self._predict_arrays(
-            x,
-            covariance,
-            gyro,
-            accel,
-            dt_s,
-        )
         self.x = predicted
         self.P = predicted_covariance
         self.last_F = F
         self.last_G = G
+        if timestamp_ns is not None:
+            self._timestamp_ns = timestamp_ns + int(round(dt_s * 1e9))
         self.prediction_count += 1
         return self.snapshot()
 
@@ -373,7 +381,7 @@ class PaperStateObserver:
     def complete_dkf_cycle(self) -> None:
         """Save one 50 Hz DKF checkpoint containing its IMU substeps."""
         delay_steps = self.config.dkf_delay_steps
-        if delay_steps == 0:
+        if delay_steps == 0 and self._timestamp_ns is None:
             return
         x, covariance = self._require_state()
         prior_x = self._pending_prior_x
@@ -389,7 +397,7 @@ class PaperStateObserver:
             )
         )
         excess = len(self._dkf_history) - delay_steps
-        if excess > 0:
+        if excess > 0 and self._timestamp_ns is None:
             del self._dkf_history[:excess]
         self._pending_predictions = []
         self._pending_prior_x = None
@@ -398,16 +406,18 @@ class PaperStateObserver:
     def correct_delayed_image(
         self,
         image_xy: Sequence[float],
+        *,
+        capture_timestamp_ns: int | None = None,
     ) -> ObserverSnapshot:
-        """Correct x[k-D] and replay D stored DKF blocks per Algorithm 2."""
+        """Correct the nearest IMU boundary, or x[k-D] for untimed callers."""
         delay_steps = self.config.dkf_delay_steps
-        if delay_steps == 0:
+        if delay_steps == 0 and capture_timestamp_ns is None:
             return self._correct_current_image(image_xy)
         if self._pending_predictions:
             raise RuntimeError(
                 'complete_dkf_cycle must be called before delayed correction'
             )
-        if len(self._dkf_history) < delay_steps:
+        if capture_timestamp_ns is None and len(self._dkf_history) < delay_steps:
             raise RuntimeError(
                 'delayed image history is not ready: '
                 f'{len(self._dkf_history)}/{delay_steps} DKF cycles'
@@ -416,32 +426,22 @@ class PaperStateObserver:
         current_x, current_covariance = self._require_state()
         saved_x = current_x.copy()
         saved_covariance = current_covariance.copy()
-        saved_history = [
-            _DkfCycleRecord(
-                prior_x=cycle.prior_x.copy(),
-                prior_covariance=cycle.prior_covariance.copy(),
-                predictions=[
-                    _PredictionRecord(
-                        prior_x=record.prior_x.copy(),
-                        prior_covariance=record.prior_covariance.copy(),
-                        gyro=record.gyro.copy(),
-                        accel=record.accel.copy(),
-                        dt_s=record.dt_s,
-                    )
-                    for record in cycle.predictions
-                ],
-            )
-            for cycle in self._dkf_history
-        ]
+        saved_history = self._dkf_history
+        history = (
+            self._dkf_history if capture_timestamp_ns is None
+            else self._history_at(capture_timestamp_ns)
+        )
         saved_correction_count = self.correction_count
         saved_innovation_norm = self.innovation_norm
         saved_last_F = self.last_F.copy()
         saved_last_G = self.last_G.copy()
 
         try:
-            oldest = self._dkf_history[0]
-            self.x = oldest.prior_x.copy()
-            self.P = oldest.prior_covariance.copy()
+            self._dkf_history = deepcopy(history)
+            if self._dkf_history:
+                oldest = self._dkf_history[0]
+                self.x = oldest.prior_x.copy()
+                self.P = oldest.prior_covariance.copy()
             self._correct_current_image(image_xy)
 
             replay_x, replay_covariance = self._require_state()
@@ -478,12 +478,52 @@ class PaperStateObserver:
             self.last_G = saved_last_G
             raise
 
+    @property
+    def history_span_ns(self) -> tuple[int, int] | None:
+        """Return the timestamped history's available IMU boundaries."""
+        if self._timestamp_ns is None:
+            return None
+        for cycle in self._dkf_history:
+            if cycle.predictions:
+                return cycle.predictions[0].timestamp_ns, self._timestamp_ns
+        return self._timestamp_ns, self._timestamp_ns
+
+    def _history_at(self, timestamp_ns: int) -> list[_DkfCycleRecord]:
+        """Select whole IMU intervals; never split one sample's noise."""
+        span = self.history_span_ns
+        if span is None or not span[0] <= timestamp_ns <= span[1]:
+            raise RuntimeError('capture time is outside the available IMU history')
+        records = [
+            record for cycle in self._dkf_history
+            for record in cycle.predictions
+        ]
+        boundaries = [record.timestamp_ns for record in records] + [span[1]]
+        index = min(
+            range(len(boundaries)),
+            key=lambda i: abs(boundaries[i] - timestamp_ns),
+        )
+        if index == len(records):
+            return []
+        first = records[index]
+        return [_DkfCycleRecord(
+            prior_x=first.prior_x,
+            prior_covariance=first.prior_covariance,
+            predictions=records[index:],
+        )]
+
+    def discard_history_before(self, timestamp_ns: int) -> None:
+        """Release history passed by an image, including undetected frames."""
+        span = self.history_span_ns
+        if span is not None and timestamp_ns >= span[0]:
+            self._dkf_history = self._history_at(min(timestamp_ns, span[1]))
+
     def _clear_delay_history(self) -> None:
         """Clear completed DKF blocks and an in-progress block."""
         self._dkf_history.clear()
         self._pending_predictions.clear()
         self._pending_prior_x = None
         self._pending_prior_covariance = None
+        self._timestamp_ns = None
 
     def _correct_current_image(
         self,
@@ -616,7 +656,17 @@ class PaperStateObserver:
         F[V_R_SLICE, ACCEL_BIAS_SLICE] = f_v_b_acc
         G[V_R_SLICE, 3:6] = f_v_b_acc
 
-        # Paper (52) holds depth fixed; its image-position block stays zero.
+        # Depth is recomputed from q/p in the mean, so F needs its chain rule.
+        image_depth_gradient = (
+            -(translation_jacobian @ velocity_c) * dt_s / depth_m
+        )
+        depth_q_gradient = np.array([
+            -(self._r_c_to_b.T @ derivative.T @ p_r)[2]
+            for derivative in rotation_derivatives
+        ])
+        F[IMAGE_SLICE, P_R_SLICE] = np.outer(
+            image_depth_gradient, -earth_to_camera[2],
+        )
         f_image_q = np.column_stack(
             [
                 translation_jacobian
@@ -626,7 +676,9 @@ class PaperStateObserver:
                 for derivative in rotation_derivatives
             ]
         ) * dt_s
-        F[IMAGE_SLICE, Q_SLICE] = f_image_q
+        F[IMAGE_SLICE, Q_SLICE] = f_image_q + np.outer(
+            image_depth_gradient, depth_q_gradient,
+        )
         F[IMAGE_SLICE, V_R_SLICE] = (
             translation_jacobian @ self._r_c_to_b.T @ r_b_to_e.T * dt_s
         )

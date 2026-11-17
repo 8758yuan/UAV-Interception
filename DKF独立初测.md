@@ -10,7 +10,7 @@ MicroXRCEAgent udp4 -p 8888
 
 
 ```bash
-DKF_TEST_CASE=C
+DKF_TEST_CASE=D
 
 gnome-terminal --window --title="2：PX4 与 Gazebo" -- bash -c '
 cd /home/yuan/PX4-Autopilot

@@ -170,7 +170,7 @@ def test_trial_launches_and_records_observer() -> None:
 
 
 def test_sitl_delay_and_dkf_period_configuration() -> None:
-    """SITL uses 70 ms; DKF retains D=4 at 50 Hz (80 ms)."""
+    """Keep SITL's 70 ms, 50 Hz scheduling and nominal mathematical D=4."""
     workspace_src = Path(__file__).parents[2]
     paper_design_config = (
         workspace_src
