@@ -22,6 +22,9 @@ def test_node_waits_for_interception_reset_then_updates_online(
         published = []
         monkeypatch.setattr(node.publisher, 'publish', published.append)
         assert node.observer.config.camera_position_b_m == (0.14, 0.0, 0.0)
+        assert node.observer.noise.target_accel_noise_density_m2_s3 == (
+            node.get_parameter('target_accel_noise_density_m2_s3').value
+        )
         node.require_range_bootstrap = False
         attitude = VehicleAttitude()
         attitude.q = [1.0, 0.0, 0.0, 0.0]
@@ -72,6 +75,13 @@ def test_node_waits_for_interception_reset_then_updates_online(
         assert np.linalg.norm(snapshot.state.q) == 1.0
         assert np.all(np.isfinite(snapshot.state.as_vector()))
         assert np.all(np.isfinite(snapshot.covariance))
+        assert len(published[-1].covariance) == 324
+        state = snapshot.state.as_vector()
+        projected, H = node.observer._project_image(state)
+        np.testing.assert_allclose(published[-1].image_xy, projected)
+        np.testing.assert_allclose(
+            snapshot.covariance[10:12], H @ snapshot.covariance, atol=1e-12,
+        )
 
         reference = deepcopy(node.observer)
         invalid = VisionFeature()

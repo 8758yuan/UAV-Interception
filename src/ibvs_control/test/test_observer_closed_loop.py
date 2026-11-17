@@ -2,6 +2,8 @@
 
 import math
 
+import pytest
+
 from ibvs_control.observer_closed_loop import simulate_observer_closed_loop
 from ibvs_control.offline_interception import (
     OfflineSimulationConfig,
@@ -38,6 +40,6 @@ def test_no_delay_observer_controller_closes_moving_target_loop() -> None:
     assert result.hit
     assert result.safe
     assert result.reason == 'hit'
-    assert result.target_distance_m > 4.0
+    assert result.target_distance_m == pytest.approx(0.15 * result.elapsed_s)
     assert result.maximum_image_radius < math.tan(math.radians(39.0))
     assert result.maximum_velocity_error_m_s < 0.35

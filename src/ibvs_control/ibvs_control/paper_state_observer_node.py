@@ -67,7 +67,6 @@ class PaperStateObserverNode(Node):
             initial_velocity_std_m_s=self._positive(
                 'initial_velocity_std_m_s'
             ),
-            initial_image_std=self._positive('initial_image_std'),
             initial_gyro_bias_std_rad_s=self._positive(
                 'initial_gyro_bias_std_rad_s'
             ),
@@ -79,6 +78,9 @@ class PaperStateObserverNode(Node):
                 'accel_noise_std_m_s2'
             ),
             image_noise_std=self._positive('image_noise_std'),
+            target_accel_noise_density_m2_s3=float(self.get_parameter(
+                'target_accel_noise_density_m2_s3'
+            ).value),
         )
         self.observer = PaperStateObserver(config, noise)
         self.require_interception_reset = bool(
@@ -205,12 +207,12 @@ class PaperStateObserverNode(Node):
         self.declare_parameter('initial_q_std', 0.005)
         self.declare_parameter('initial_position_std_m', 0.5)
         self.declare_parameter('initial_velocity_std_m_s', 0.2)
-        self.declare_parameter('initial_image_std', 0.02)
         self.declare_parameter('initial_gyro_bias_std_rad_s', 0.005)
         self.declare_parameter('initial_accel_bias_std_m_s2', 0.05)
         self.declare_parameter('gyro_noise_std_rad_s', 0.015)
         self.declare_parameter('accel_noise_std_m_s2', 0.15)
         self.declare_parameter('image_noise_std', 0.015)
+        self.declare_parameter('target_accel_noise_density_m2_s3', 8.0 / 9.0)
 
     def _attitude_callback(self, message: VehicleAttitude) -> None:
         try:
@@ -383,7 +385,7 @@ class PaperStateObserverNode(Node):
                 self._publish_uninitialized(reason)
 
     def _dkf_callback(self) -> None:
-        """Predict, correct at the image's IMU time, and replay to the present."""
+        """Predict, correct at capture time, and replay to the present."""
         if not self.observer.initialized:
             return
         try:
@@ -420,10 +422,14 @@ class PaperStateObserverNode(Node):
             span = self.observer.history_span_ns
             if span is None or capture_ns > span[1]:
                 self.pending_feature = feature
-                self._publish(self.observer.snapshot(), 'waiting_for_capture_imu')
+                self._publish(
+                    self.observer.snapshot(), 'waiting_for_capture_imu'
+                )
                 return
             if capture_ns < span[0]:
-                self._publish(self.observer.snapshot(), 'capture_history_unavailable')
+                self._publish(
+                    self.observer.snapshot(), 'capture_history_unavailable'
+                )
                 return
             image_xy = (float(feature.x_norm), float(feature.y_norm))
             snapshot = self.observer.correct_delayed_image(

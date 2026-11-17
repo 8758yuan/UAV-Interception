@@ -8,6 +8,7 @@ from px4_msgs.msg import VehicleAttitude
 import rclpy
 from std_msgs.msg import Empty
 
+from ibvs_control.frames import quaternion_wxyz_to_rotation
 from ibvs_control.paper_state_observer_node import PaperStateObserverNode
 
 
@@ -21,7 +22,8 @@ def observer_node():
         node = PaperStateObserverNode()
         assert node.require_range_bootstrap
         attitude = VehicleAttitude()
-        attitude.q = [1.0, 0.0, 0.0, 0.0]
+        # This PX4 yaw makes the FLU forward axis point along ENU east.
+        attitude.q = [np.sqrt(0.5), 0.0, 0.0, np.sqrt(0.5)]
         node._attitude_callback(attitude)
         yield node
     finally:
@@ -91,7 +93,12 @@ def _assert_initialized_from_bootstrap(
         position + velocity * dt_s
     )
     assert snapshot.state.v_r_e == pytest.approx(velocity)
-    assert snapshot.state.image_xy == pytest.approx((0.02, -0.01))
+    rotation = quaternion_wxyz_to_rotation(snapshot.state.q)
+    camera_to_body = np.array(((0, 0, 1), (-1, 0, 0), (0, -1, 0)))
+    point = camera_to_body.T @ (
+        -rotation.T @ (position + velocity * dt_s) - (0.14, 0.0, 0.0)
+    )
+    assert snapshot.state.image_xy == pytest.approx(point[:2] / point[2])
     transition = np.eye(6)
     transition[:3, 3:] = np.eye(3) * dt_s
     assert snapshot.covariance[4:10, 4:10] == pytest.approx(

@@ -1,4 +1,4 @@
-"""18-state DKF with depth chain-rule derivatives and timestamped IMU replay."""
+"""18-state DKF with geometric image measurements and target maneuver noise."""
 
 from copy import deepcopy
 from dataclasses import dataclass
@@ -71,16 +71,24 @@ class ObserverNoise:
     initial_q_std: float = 0.005
     initial_position_std_m: float = 0.5
     initial_velocity_std_m_s: float = 0.2
-    initial_image_std: float = 0.02
     initial_gyro_bias_std_rad_s: float = 0.005
     initial_accel_bias_std_m_s2: float = 0.05
     gyro_noise_std_rad_s: float = 0.015
     accel_noise_std_m_s2: float = 0.15
     image_noise_std: float = 0.015
+    # Isotropic continuous acceleration-noise density, in m^2/s^3.
+    target_accel_noise_density_m2_s3: float = 8.0 / 9.0
 
     def validate(self) -> None:
         """Reject nonfinite or nonpositive uncertainty definitions."""
-        for name, value in vars(self).items():
+        uncertainties = vars(self).copy()
+        density = uncertainties.pop('target_accel_noise_density_m2_s3')
+        if not math.isfinite(density) or density < 0.0:
+            raise ValueError(
+                'target_accel_noise_density_m2_s3 must be finite '
+                'and nonnegative'
+            )
+        for name, value in uncertainties.items():
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f'{name} must be finite and positive')
 
@@ -155,7 +163,7 @@ class _DkfCycleRecord:
 
 
 class PaperStateObserver:
-    """DKF using the paper's Appendix B propagation and delayed update."""
+    """Delayed IMU/image EKF with the paper's 18-element state interface."""
 
     def __init__(
         self,
@@ -211,22 +219,19 @@ class PaperStateObserver:
         state: InterceptionState18,
         *,
         relative_covariance: Sequence[Sequence[float]] | None = None,
-        image_position_covariance: Sequence[Sequence[float]] | None = None,
     ) -> ObserverSnapshot:
         """Initialize x and P, optionally using a measured relative-state prior.
 
-        The relative covariance follows [p_r_e(3), v_r_e(3)] order. The
-        image-position cross covariance is Cov(image_xy, p_r_e), with image
-        coordinates along rows and relative position along columns.
+        The relative covariance follows [p_r_e(3), v_r_e(3)] order.
+        Image coordinates and their covariance are derived from q and p_r.
         """
         vector = state.as_vector()
-        vector[Q_SLICE] = _normalize_quaternion(vector[Q_SLICE])
         std = self.noise
         standard_deviations = np.array(
             [std.initial_q_std] * 4
             + [std.initial_position_std_m] * 3
             + [std.initial_velocity_std_m_s] * 3
-            + [std.initial_image_std] * 2
+            + [0.0] * 2
             + [std.initial_gyro_bias_std_rad_s] * 3
             + [std.initial_accel_bias_std_m_s2] * 3,
             dtype=float,
@@ -244,14 +249,6 @@ class PaperStateObserver:
             covariance[relative_slice, relative_slice] = (
                 relative + relative.T
             ) * 0.5
-        if image_position_covariance is not None:
-            cross = np.asarray(image_position_covariance, dtype=float)
-            if cross.shape != (2, 3) or not np.all(np.isfinite(cross)):
-                raise ValueError(
-                    'image_position_covariance must be a finite 2x3 matrix'
-                )
-            covariance[IMAGE_SLICE, P_R_SLICE] = cross
-            covariance[P_R_SLICE, IMAGE_SLICE] = cross.T
         eigenvalues, eigenvectors = np.linalg.eigh(covariance)
         if eigenvalues[0] < -1e-10 * max(1.0, eigenvalues[-1]):
             raise ValueError(
@@ -262,8 +259,9 @@ class PaperStateObserver:
                 eigenvectors * np.maximum(eigenvalues, 0.0)
             ) @ eigenvectors.T
             covariance = (covariance + covariance.T) * 0.5
+        vector, transform = self._geometric_state(vector)
         self.x = vector
-        self.P = covariance
+        self.P = transform @ covariance @ transform.T
         self.prediction_count = 0
         self.correction_count = 0
         self.innovation_norm = 0.0
@@ -282,7 +280,6 @@ class PaperStateObserver:
         initial_b_acc_b: Sequence[float] = (0.0, 0.0, 0.0),
         *,
         relative_covariance: Sequence[Sequence[float]] | None = None,
-        image_position_covariance: Sequence[Sequence[float]] | None = None,
     ) -> ObserverSnapshot:
         """Initialize p_r from image LOS and an engineering depth prior."""
         q = _normalize_quaternion(_finite_vector(q_b_to_e, 4, 'q_b_to_e'))
@@ -314,7 +311,6 @@ class PaperStateObserver:
         return self.initialize(
             state,
             relative_covariance=relative_covariance,
-            image_position_covariance=image_position_covariance,
         )
 
     def predict(
@@ -417,7 +413,8 @@ class PaperStateObserver:
             raise RuntimeError(
                 'complete_dkf_cycle must be called before delayed correction'
             )
-        if capture_timestamp_ns is None and len(self._dkf_history) < delay_steps:
+        if (capture_timestamp_ns is None
+                and len(self._dkf_history) < delay_steps):
             raise RuntimeError(
                 'delayed image history is not ready: '
                 f'{len(self._dkf_history)}/{delay_steps} DKF cycles'
@@ -492,7 +489,9 @@ class PaperStateObserver:
         """Select whole IMU intervals; never split one sample's noise."""
         span = self.history_span_ns
         if span is None or not span[0] <= timestamp_ns <= span[1]:
-            raise RuntimeError('capture time is outside the available IMU history')
+            raise RuntimeError(
+                'capture time is outside the available IMU history'
+            )
         records = [
             record for cycle in self._dkf_history
             for record in cycle.predictions
@@ -529,14 +528,12 @@ class PaperStateObserver:
         self,
         image_xy: Sequence[float],
     ) -> ObserverSnapshot:
-        """Apply equations (32)-(36) to the estimate at its current epoch."""
+        """Correct q/p_r using the projection, then rederive the image."""
         x, covariance = self._require_state()
         measurement = _finite_vector(image_xy, 2, 'image_xy')
-        H = np.zeros((MEASUREMENT_DIM, STATE_DIM))
-        H[:, IMAGE_SLICE] = np.eye(MEASUREMENT_DIM)
-        innovation = measurement - H @ x
+        image, H = self._project_image(x)
+        innovation = measurement - image
         innovation_covariance = H @ covariance @ H.T + self._R
-        self.innovation_norm = float(np.linalg.norm(innovation))
         # Solve the right-sided system without forming an explicit inverse:
         # K = P H^T S^{-1}, exactly as in paper equation (36).
         gain = np.linalg.solve(
@@ -544,16 +541,16 @@ class PaperStateObserver:
             (covariance @ H.T).T,
         ).T
         corrected = x + gain @ innovation
-        corrected[Q_SLICE] = _normalize_quaternion(
-            corrected[Q_SLICE],
-            reference=x[Q_SLICE],
-        )
         # Keep the covariance update exactly as written in paper equation
         # (35).  The Joseph form and covariance regularization are not part of
         # the paper's DKF algorithm.
         corrected_covariance = (np.eye(STATE_DIM) - gain @ H) @ covariance
+        corrected, transform = self._geometric_state(
+            corrected, reference=x[Q_SLICE],
+        )
         self.x = corrected
-        self.P = corrected_covariance
+        self.P = transform @ corrected_covariance @ transform.T
+        self.innovation_norm = float(np.linalg.norm(innovation))
         self.correction_count += 1
         return self.snapshot()
 
@@ -568,7 +565,67 @@ class PaperStateObserver:
         """Predict arrays without changing counters or recording history."""
         predicted, F, G = self._appendix_prediction(x, gyro, accel, dt_s)
         predicted_covariance = F @ covariance @ F.T + G @ self._Q @ G.T
+        predicted_covariance += self._maneuver_covariance(predicted, dt_s)
         return predicted, predicted_covariance, F, G
+
+    def _project_image(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return h(q,p_r) and its Jacobian in the 18-state storage layout."""
+        q = x[Q_SLICE]
+        p_r = x[P_R_SLICE]
+        rotation = _quaternion_to_rotation(q)
+        target_c = self._r_c_to_b.T @ (
+            -rotation.T @ p_r - self._camera_position_b
+        )
+        depth_m = float(target_c[2])
+        if not math.isfinite(depth_m) or depth_m <= 0.0:
+            raise ValueError(
+                'estimated target depth is invalid or behind camera'
+            )
+        image = target_c[:2] / depth_m
+        projection = np.array(
+            ((1.0, 0.0, -image[0]), (0.0, 1.0, -image[1]))
+        ) / depth_m
+        H = np.zeros((MEASUREMENT_DIM, STATE_DIM))
+        H[:, Q_SLICE] = projection @ np.column_stack([
+            -self._r_c_to_b.T @ derivative.T @ p_r
+            for derivative in _rotation_derivatives(q)
+        ])
+        H[:, P_R_SLICE] = -projection @ self._r_c_to_b.T @ rotation.T
+        return image, H
+
+    def _geometric_state(
+        self,
+        x: np.ndarray,
+        reference: Sequence[float] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Normalize q and derive image_xy with the same map's Jacobian."""
+        result = x.copy()
+        q = _normalize_quaternion(x[Q_SLICE], reference=reference)
+        result[Q_SLICE] = q
+        transform = np.eye(STATE_DIM)
+        sign = 1.0 if float(q @ x[Q_SLICE]) >= 0.0 else -1.0
+        transform[Q_SLICE, Q_SLICE] = (
+            sign * (np.eye(4) - np.outer(q, q))
+            / np.linalg.norm(x[Q_SLICE])
+        )
+        image, H = self._project_image(result)
+        result[IMAGE_SLICE] = image
+        transform[IMAGE_SLICE, :] = H @ transform
+        return result, transform
+
+    def _maneuver_covariance(self, x: np.ndarray, dt_s: float) -> np.ndarray:
+        """Integrate independent ENU maneuver noise over one IMU step."""
+        density = self.noise.target_accel_noise_density_m2_s3
+        identity = np.eye(3)
+        relative_noise = density * np.block([
+            [identity * dt_s**3 / 3.0, identity * dt_s**2 / 2.0],
+            [identity * dt_s**2 / 2.0, identity * dt_s],
+        ])
+        injection = np.zeros((STATE_DIM, 6))
+        injection[4:10, :] = np.eye(6)
+        _, H = self._project_image(x)
+        injection[IMAGE_SLICE, :3] = H[:, P_R_SLICE]
+        return injection @ relative_noise @ injection.T
 
     def snapshot(self) -> ObserverSnapshot:
         """Return defensive copies of the current state and covariance."""
@@ -593,50 +650,24 @@ class PaperStateObserver:
         accel: np.ndarray,
         dt_s: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Evaluate the nonlinear recurrence and Appendix Jacobian blocks."""
+        """Propagate q/p_r/v_r, then derive the image and all Jacobian rows."""
         q = x[Q_SLICE]
         p_r = x[P_R_SLICE]
         v_r = x[V_R_SLICE]
-        image = x[IMAGE_SLICE]
         b_gyr = x[GYRO_BIAS_SLICE]
         b_acc = x[ACCEL_BIAS_SLICE]
         omega_b = gyro - b_gyr
         specific_force_b = accel - b_acc
         r_b_to_e = _quaternion_to_rotation(q)
-        earth_to_camera = self._r_c_to_b.T @ r_b_to_e.T
-        target_c = (
-            earth_to_camera @ (-p_r)
-            - self._r_c_to_b.T @ self._camera_position_b
-        )
-        depth_m = float(target_c[2])
-        if not math.isfinite(depth_m) or depth_m <= 0.0:
-            raise ValueError(
-                'estimated target depth is invalid or behind camera'
-            )
-
         delta_matrix = _appendix_delta_quaternion_matrix(omega_b, dt_s)
-        q_new = _normalize_quaternion(delta_matrix @ q, reference=q)
         acceleration_e = r_b_to_e @ specific_force_b + self._gravity
         v_r_new = v_r + acceleration_e * dt_s
         p_r_new = p_r + 0.5 * (v_r + v_r_new) * dt_s
 
-        velocity_c = self._r_c_to_b.T @ (
-            r_b_to_e.T @ v_r
-            + np.cross(omega_b, self._camera_position_b)
-        )
-        omega_c = self._r_c_to_b.T @ omega_b
-        translation_jacobian = _translation_image_jacobian(image, depth_m)
-        rotation_jacobian = _rotation_image_jacobian(image)
-        image_new = image + (
-            translation_jacobian @ velocity_c
-            + rotation_jacobian @ omega_c
-        ) * dt_s
-
         predicted = x.copy()
-        predicted[Q_SLICE] = q_new
+        predicted[Q_SLICE] = delta_matrix @ q
         predicted[P_R_SLICE] = p_r_new
         predicted[V_R_SLICE] = v_r_new
-        predicted[IMAGE_SLICE] = image_new
 
         F = np.eye(STATE_DIM)
         G = np.zeros((STATE_DIM, PROCESS_NOISE_DIM))
@@ -656,52 +687,12 @@ class PaperStateObserver:
         F[V_R_SLICE, ACCEL_BIAS_SLICE] = f_v_b_acc
         G[V_R_SLICE, 3:6] = f_v_b_acc
 
-        # Depth is recomputed from q/p in the mean, so F needs its chain rule.
-        image_depth_gradient = (
-            -(translation_jacobian @ velocity_c) * dt_s / depth_m
-        )
-        depth_q_gradient = np.array([
-            -(self._r_c_to_b.T @ derivative.T @ p_r)[2]
-            for derivative in rotation_derivatives
-        ])
-        F[IMAGE_SLICE, P_R_SLICE] = np.outer(
-            image_depth_gradient, -earth_to_camera[2],
-        )
-        f_image_q = np.column_stack(
-            [
-                translation_jacobian
-                @ self._r_c_to_b.T
-                @ derivative.T
-                @ v_r
-                for derivative in rotation_derivatives
-            ]
-        ) * dt_s
-        F[IMAGE_SLICE, Q_SLICE] = f_image_q + np.outer(
-            image_depth_gradient, depth_q_gradient,
-        )
-        F[IMAGE_SLICE, V_R_SLICE] = (
-            translation_jacobian @ self._r_c_to_b.T @ r_b_to_e.T * dt_s
-        )
-        F[IMAGE_SLICE, IMAGE_SLICE] = _appendix_image_state_jacobian(
-            image,
-            velocity_c,
-            omega_c,
-            depth_m,
-            dt_s,
-        )
-        # Equation (55) follows from the discretized equation (51); dt is
-        # required dimensionally even though it is omitted in the typeset (55).
-        f_image_b_gyr = (
-            translation_jacobian @ self._r_c_to_b.T
-            @ np.column_stack([
-                np.cross(self._camera_position_b, axis)
-                for axis in np.eye(3)
-            ])
-            - rotation_jacobian @ self._r_c_to_b.T
-        ) * dt_s
-        F[IMAGE_SLICE, GYRO_BIAS_SLICE] = f_image_b_gyr
-        G[IMAGE_SLICE, 0:3] = f_image_b_gyr
-        return predicted, F, G
+        # Position uses the same trapezoidal acceleration as its mean.
+        F[P_R_SLICE, Q_SLICE] = 0.5 * dt_s * f_v_q
+        F[P_R_SLICE, ACCEL_BIAS_SLICE] = 0.5 * dt_s * f_v_b_acc
+        G[P_R_SLICE, 3:6] = 0.5 * dt_s * f_v_b_acc
+        predicted, transform = self._geometric_state(predicted, reference=q)
+        return predicted, transform @ F, transform @ G
 
 
 def _appendix_delta_quaternion_matrix(
@@ -736,60 +727,6 @@ def _appendix_quaternion_bias_jacobian(
         ),
         dtype=float,
     )
-
-
-def _translation_image_jacobian(
-    image_xy: np.ndarray,
-    depth_m: float,
-) -> np.ndarray:
-    """Return the translational block in equations (51) and (53)."""
-    x, y = image_xy
-    inverse_depth = 1.0 / depth_m
-    return np.array(
-        (
-            (-inverse_depth, 0.0, x * inverse_depth),
-            (0.0, -inverse_depth, y * inverse_depth),
-        ),
-        dtype=float,
-    )
-
-
-def _rotation_image_jacobian(image_xy: np.ndarray) -> np.ndarray:
-    """Return the rotational IBVS block in equations (51) and (55)."""
-    x, y = image_xy
-    return np.array(
-        (
-            (x * y, -(1.0 + x * x), y),
-            (1.0 + y * y, -x * y, -x),
-        ),
-        dtype=float,
-    )
-
-
-def _appendix_image_state_jacobian(
-    image_xy: np.ndarray,
-    velocity_c: np.ndarray,
-    omega_c: np.ndarray,
-    depth_m: float,
-    dt_s: float,
-) -> np.ndarray:
-    """Return equation (54), F(image_k,image[k-1])."""
-    x, y = image_xy
-    _, _, velocity_z = velocity_c
-    omega_x, omega_y, omega_z = omega_c
-    return np.eye(2) + np.array(
-        (
-            (
-                velocity_z / depth_m + y * omega_x - 2.0 * x * omega_y,
-                x * omega_x + omega_z,
-            ),
-            (
-                -y * omega_y - omega_z,
-                velocity_z / depth_m + 2.0 * y * omega_x - x * omega_y,
-            ),
-        ),
-        dtype=float,
-    ) * dt_s
 
 
 def _quaternion_to_rotation(q: np.ndarray) -> np.ndarray:

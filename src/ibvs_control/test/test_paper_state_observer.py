@@ -15,9 +15,9 @@ from ibvs_control.paper_state_observer import (
     V_R_SLICE,
     InterceptionState18,
     ObserverConfig,
+    ObserverNoise,
     PaperStateObserver,
     _appendix_delta_quaternion_matrix,
-    _appendix_image_state_jacobian,
     _quaternion_to_rotation,
     _rotation_derivatives,
 )
@@ -38,6 +38,35 @@ def _initialized_observer(
         depth_m,
     )
     return observer
+
+
+def _project_state(observer, state):
+    rotation = _quaternion_to_rotation(state[Q_SLICE])
+    point = observer._r_c_to_b.T @ (
+        -rotation.T @ state[P_R_SLICE] - observer._camera_position_b
+    )
+    return point[:2] / point[2]
+
+
+def _numerical_jacobian(function, state, epsilon=1e-6):
+    return np.column_stack([
+        (function(state + delta) - function(state - delta)) / (2 * epsilon)
+        for delta in epsilon * np.eye(len(state))
+    ])
+
+
+def _assert_geometric_state(observer):
+    snapshot = observer.snapshot()
+    x = snapshot.state.as_vector()
+    assert x[IMAGE_SLICE] == pytest.approx(_project_state(observer, x), abs=1e-12)
+    H = _numerical_jacobian(lambda state: _project_state(observer, state), x)
+    assert snapshot.covariance[IMAGE_SLICE] == pytest.approx(
+        H @ snapshot.covariance, abs=1e-9,
+    )
+    assert x[Q_SLICE] @ snapshot.covariance[Q_SLICE] == pytest.approx(
+        np.zeros(STATE_DIM), abs=1e-12,
+    )
+    assert np.linalg.eigvalsh(snapshot.covariance)[0] >= -1e-10
 
 
 def test_state_layout_is_exactly_the_paper_18_vector() -> None:
@@ -69,78 +98,44 @@ def test_image_and_depth_prior_initialize_relative_position() -> None:
     assert np.linalg.norm(state.q) == pytest.approx(1.0)
 
 
-def test_initial_covariance_accepts_relative_and_image_correlations() -> None:
+def test_initial_covariance_derives_image_from_relative_state() -> None:
     observer = PaperStateObserver()
-    factor = np.array(
-        (
-            (1.2, 0.0, 0.0, 0.0, 0.0, 0.0),
-            (0.2, 1.1, 0.0, 0.0, 0.0, 0.0),
-            (-0.1, 0.3, 1.4, 0.0, 0.0, 0.0),
-            (0.15, 0.0, 0.0, 0.4, 0.0, 0.0),
-            (0.0, -0.1, 0.0, 0.05, 0.5, 0.0),
-            (0.0, 0.0, 0.12, 0.0, 0.1, 0.6),
-        )
-    )
+    factor = np.eye(6)
+    factor[1, 0] = 0.2
+    factor[3, 0] = 0.15
     relative_covariance = factor @ factor.T
-    image_position_covariance = np.array(
-        ((0.005, -0.003, 0.0), (0.0, 0.004, 0.002))
-    )
     initial = observer.initialize_from_image(
-        (1.0, 0.0, 0.0, 0.0),
-        (0.1, -0.05),
-        10.0,
+        (1.0, 0.0, 0.0, 0.0), (0.1, -0.05), 10.0,
         relative_covariance=relative_covariance,
-        image_position_covariance=image_position_covariance,
     )
-    covariance = initial.covariance
-    assert covariance[4:10, 4:10] == pytest.approx(relative_covariance)
-    assert covariance[IMAGE_SLICE, P_R_SLICE] == pytest.approx(
-        image_position_covariance
-    )
-    assert covariance[P_R_SLICE, IMAGE_SLICE] == pytest.approx(
-        image_position_covariance.T
-    )
-    assert np.linalg.eigvalsh(covariance)[0] >= -1e-12
-
-    # The initial image and position came from shared measurements. A new
-    # image observation must be able to adjust the position through that
-    # covariance, even before the first prediction.
+    assert initial.covariance[4:10, 4:10] == pytest.approx(relative_covariance)
+    _assert_geometric_state(observer)
+    assert np.linalg.norm(initial.covariance[IMAGE_SLICE, P_R_SLICE]) > 0.0
     before = np.asarray(initial.state.p_r_e)
     after = observer.correct_image((0.12, -0.04))
     assert np.linalg.norm(np.asarray(after.state.p_r_e) - before) > 0.0
+    _assert_geometric_state(observer)
 
 
-@pytest.mark.parametrize(
-    ('relative_covariance', 'image_position_covariance', 'message'),
-    (
-        (np.eye(5), None, 'relative_covariance'),
-        (np.eye(6) + np.diag((0.1, 0.0, 0.0, 0.0, 0.0), k=1),
-         None, 'relative_covariance'),
-        (np.diag((1.0, 1.0, 1.0, 1.0, 1.0, -1.0)), None,
-         'positive semidefinite'),
-        (np.eye(6), np.ones((2, 3)), 'positive semidefinite'),
-        (np.eye(6), np.array(((math.nan, 0.0, 0.0), (0.0, 0.0, 0.0))),
-         'image_position_covariance'),
-    ),
-)
+@pytest.mark.parametrize(('relative_covariance', 'message'), (
+    (np.eye(5), 'relative_covariance'),
+    (np.eye(6) + np.diag((0.1, 0.0, 0.0, 0.0, 0.0), k=1),
+     'relative_covariance'),
+    (np.diag((1.0, 1.0, 1.0, 1.0, 1.0, -1.0)), 'positive semidefinite'),
+    (np.full((6, 6), math.nan), 'relative_covariance'),
+))
 def test_invalid_initial_covariance_does_not_replace_state(
-    relative_covariance,
-    image_position_covariance,
-    message,
+    relative_covariance, message,
 ) -> None:
     observer = _initialized_observer()
     before = observer.snapshot()
     with pytest.raises(ValueError, match=message):
         observer.initialize_from_image(
-            (1.0, 0.0, 0.0, 0.0),
-            (0.0, 0.0),
-            15.0,
+            (1.0, 0.0, 0.0, 0.0), (0.0, 0.0), 15.0,
             relative_covariance=relative_covariance,
-            image_position_covariance=image_position_covariance,
         )
-    after = observer.snapshot()
-    assert after.state == before.state
-    assert after.covariance == pytest.approx(before.covariance)
+    assert observer.snapshot().state == before.state
+    assert observer.P == pytest.approx(before.covariance)
 
 
 def test_stationary_imu_prediction_preserves_mean_and_is_finite() -> None:
@@ -189,47 +184,14 @@ def test_velocity_quaternion_block_matches_equation_49() -> None:
     assert analytic == pytest.approx(numerical, abs=1e-8)
 
 
-def test_image_state_block_matches_equation_54() -> None:
-    image = np.array((0.2, -0.1))
-    velocity_c = np.array((0.4, -0.2, 1.1))
-    omega_c = np.array((0.03, -0.04, 0.02))
-    depth_m = 8.0
-    dt_s = 0.01
-    jacobian = _appendix_image_state_jacobian(
-        image,
-        velocity_c,
-        omega_c,
-        depth_m,
-        dt_s,
-    )
-
-    def propagate(candidate):
-        x_value, y_value = candidate
-        translation = np.array(
-            (
-                (-1.0 / depth_m, 0.0, x_value / depth_m),
-                (0.0, -1.0 / depth_m, y_value / depth_m),
-            )
-        )
-        rotation = np.array(
-            (
-                (x_value * y_value, -(1.0 + x_value ** 2), y_value),
-                (1.0 + y_value ** 2, -x_value * y_value, -x_value),
-            )
-        )
-        return candidate + (
-            translation @ velocity_c + rotation @ omega_c
-        ) * dt_s
-
-    numerical = np.zeros((2, 2))
-    epsilon = 1e-7
-    for index in range(2):
-        delta = np.zeros(2)
-        delta[index] = epsilon
-        numerical[:, index] = (
-            propagate(image + delta) - propagate(image - delta)
-        ) / (2.0 * epsilon)
-    assert jacobian == pytest.approx(numerical, abs=1e-8)
+def test_image_is_derived_even_if_initialized_image_disagrees() -> None:
+    observer = _initialized_observer((0.1, -0.05))
+    state = observer.snapshot().state
+    from dataclasses import replace
+    observer.initialize(replace(state, image_xy=(1.2, -0.7)))
+    assert observer.snapshot().state.p_r_e == state.p_r_e
+    assert observer.snapshot().state.image_xy == pytest.approx((0.1, -0.05))
+    _assert_geometric_state(observer)
 
 
 @pytest.mark.parametrize('depth', (0.5, 9.0))
@@ -247,7 +209,7 @@ def test_image_position_and_attitude_blocks_include_depth_derivatives(depth, off
     accel = np.array((0.0, 0.0, GRAVITY))
     dt_s = 0.01
     _, F, _ = observer._appendix_prediction(state, gyro, accel, dt_s)
-    epsilon = 1e-7
+    epsilon = 1e-6
     for column in range(P_R_SLICE.stop):
         delta = np.zeros(STATE_DIM)
         delta[column] = epsilon
@@ -399,16 +361,12 @@ def test_delayed_replay_preserves_correlated_initial_covariance() -> None:
     reference = PaperStateObserver(config=config)
     relative_covariance = np.diag((1.0, 1.2, 1.4, 0.2, 0.3, 0.4))
     relative_covariance[0, 3] = relative_covariance[3, 0] = 0.05
-    cross_covariance = np.array(
-        ((0.004, 0.0, 0.0), (0.0, 0.003, 0.0))
-    )
     for observer in (delayed, reference):
         observer.initialize_from_image(
             (1.0, 0.0, 0.0, 0.0),
             (0.01, -0.02),
             12.0,
             relative_covariance=relative_covariance,
-            image_position_covariance=cross_covariance,
         )
     measurement = (0.025, -0.01)
     reference.correct_image(measurement)
@@ -516,25 +474,30 @@ def test_image_measurement_is_applied_without_extra_innovation_gate() -> None:
     assert after.innovation_norm == pytest.approx(0.04)
 
 
-def test_image_covariance_uses_paper_equation_35() -> None:
+def test_geometric_update_maps_covariance_with_its_mean() -> None:
     observer = _initialized_observer()
     before = observer.snapshot()
-    H = np.zeros((2, STATE_DIM))
-    H[:, IMAGE_SLICE] = np.eye(2)
+    x = before.state.as_vector()
+    H = _numerical_jacobian(lambda state: _project_state(observer, state), x)
     measurement = np.array((0.04, -0.03))
-    innovation = measurement - H @ before.state.as_vector()
-    measurement_covariance = H @ before.covariance @ H.T
-    measurement_covariance += np.eye(2) * observer.noise.image_noise_std ** 2
-    gain = np.linalg.solve(
-        measurement_covariance.T,
-        (before.covariance @ H.T).T,
-    ).T
-    expected = (np.eye(STATE_DIM) - gain @ H) @ before.covariance
+    innovation = measurement - _project_state(observer, x)
+    S = H @ before.covariance @ H.T + observer._R
+    gain = np.linalg.solve(S.T, (before.covariance @ H.T).T).T
+    raw = x + gain @ innovation
 
+    def canonical(state):
+        result = state.copy()
+        result[Q_SLICE] /= np.linalg.norm(result[Q_SLICE])
+        result[IMAGE_SLICE] = _project_state(observer, result)
+        return result
+
+    M = _numerical_jacobian(canonical, raw)
+    expected = M @ ((np.eye(STATE_DIM) - gain @ H) @ before.covariance) @ M.T
     after = observer.correct_image(measurement)
-
-    assert after.covariance == pytest.approx(expected)
+    assert after.covariance == pytest.approx(expected, abs=1e-9)
+    assert after.state.as_vector() == pytest.approx(canonical(raw), abs=1e-9)
     assert after.innovation_norm == pytest.approx(np.linalg.norm(innovation))
+    _assert_geometric_state(observer)
 
 
 def test_image_innovation_updates_observable_imu_bias_states() -> None:
@@ -601,23 +564,31 @@ def test_positive_depth_below_old_limit_still_predicts(depth_m) -> None:
 
 
 @pytest.mark.parametrize('depth_m', (0.0, -0.1))
-def test_nonpositive_depth_still_rejects_prediction(depth_m) -> None:
+def test_nonpositive_initial_depth_does_not_replace_state(depth_m) -> None:
+    observer = _initialized_observer()
+    before = observer.snapshot()
+    with pytest.raises(ValueError, match='depth'):
+        observer.initialize(InterceptionState18(
+            q=(1.0, 0.0, 0.0, 0.0), p_r_e=(-depth_m, 0.0, 0.0),
+            v_r_e=(0.0, 0.0, 0.0), image_xy=(0.0, 0.0),
+            b_gyr_b=(0.0, 0.0, 0.0), b_acc_b=(0.0, 0.0, 0.0),
+        ))
+    assert observer.snapshot().state == before.state
+    assert observer.P == pytest.approx(before.covariance)
+
+
+def test_prediction_crossing_camera_plane_does_not_mutate_state() -> None:
     observer = PaperStateObserver()
-    observer.initialize(InterceptionState18(
-        q=(1.0, 0.0, 0.0, 0.0),
-        p_r_e=(-depth_m, 0.0, 0.0),
-        v_r_e=(0.0, 0.0, 0.0),
-        image_xy=(0.0, 0.0),
-        b_gyr_b=(0.0, 0.0, 0.0),
-        b_acc_b=(0.0, 0.0, 0.0),
-    ))
+    observer.initialize_from_image(
+        (1.0, 0.0, 0.0, 0.0), (0.0, 0.0), 0.1,
+        initial_v_r_e=(30.0, 0.0, 0.0),
+    )
     before = observer.snapshot()
     with pytest.raises(ValueError, match='depth'):
         observer.predict((0.0, 0.0, 0.0), (0.0, 0.0, GRAVITY), 0.005)
-    after = observer.snapshot()
-    assert after.state == before.state
-    assert after.covariance == pytest.approx(before.covariance)
-    assert after.prediction_count == 0
+    assert observer.snapshot().state == before.state
+    assert observer.P == pytest.approx(before.covariance)
+    assert observer.prediction_count == 0
 
 
 def test_reset_discards_state_and_counters() -> None:
@@ -659,14 +630,15 @@ def test_offset_camera_initialization_and_image_motion_match_projection(depth):
 
     assert project(0.0) == pytest.approx(initial.image_xy)
     assert (C.T @ (-R.T @ p - offset))[2] == pytest.approx(depth)
-    dt_s = 0.005
-    predicted = observer.predict(omega, (0.0, 0.0, GRAVITY), dt_s)
+    dt_s = 1e-7
+    force_b = R.T @ np.array((0.0, 0.0, GRAVITY))
+    predicted = observer.predict(omega, force_b, dt_s)
     image_rate = (
         np.asarray(predicted.state.image_xy) - initial.image_xy
     ) / dt_s
     epsilon = 1e-7
     assert image_rate == pytest.approx(
-        (project(epsilon) - project(-epsilon)) / (2.0 * epsilon), abs=1e-7
+        (project(epsilon) - project(-epsilon)) / (2.0 * epsilon), abs=1e-5
     )
 
 
@@ -703,3 +675,84 @@ def test_camera_image_remaining_jacobians_include_lever_arm(offset):
 def test_camera_offset_requires_finite_three_vector(offset):
     with pytest.raises(ValueError, match='camera_position_b_m'):
         PaperStateObserver(ObserverConfig(camera_position_b_m=offset))
+
+
+@pytest.mark.parametrize('depth', (0.2, 12.0))
+def test_complete_prediction_and_noise_jacobians_match_finite_differences(depth):
+    observer = PaperStateObserver(ObserverConfig(
+        camera_position_b_m=(0.14, -0.03, 0.1),
+    ))
+    observer.initialize_from_image(
+        (0.98, 0.02, 0.1, -0.02), (0.13, -0.07), depth,
+        initial_v_r_e=(0.8, -0.5, 0.2),
+    )
+    state = observer.x.copy()
+    gyro = np.array((0.3, -0.2, 0.1))
+    accel = np.array((0.5, -0.1, GRAVITY))
+    _, F, G = observer._appendix_prediction(state, gyro, accel, 0.005)
+    numerical_F = _numerical_jacobian(
+        lambda x: observer._appendix_prediction(x, gyro, accel, 0.005)[0], state,
+    )
+    numerical_G = _numerical_jacobian(
+        lambda noise: observer._appendix_prediction(
+            state, gyro - noise[:3], accel - noise[3:], 0.005,
+        )[0], np.zeros(6),
+    )
+    assert F == pytest.approx(numerical_F, abs=1e-8)
+    assert G == pytest.approx(numerical_G, abs=1e-8)
+
+
+@pytest.mark.parametrize('dt', (0.004, 0.02, 0.05))
+def test_target_maneuver_noise_has_integrated_relative_and_image_covariance(dt):
+    density = 0.8
+    observer = PaperStateObserver(
+        ObserverConfig(camera_position_b_m=(0.14, -0.03, 0.1)),
+        ObserverNoise(target_accel_noise_density_m2_s3=density),
+    )
+    observer.initialize_from_image(
+        (0.98, 0.02, 0.1, -0.02), (0.13, -0.07), 0.5,
+    )
+    noise = observer._maneuver_covariance(observer.x, dt)
+    assert noise[P_R_SLICE, P_R_SLICE] == pytest.approx(
+        density * dt**3 / 3 * np.eye(3), abs=1e-15,
+    )
+    assert noise[P_R_SLICE, V_R_SLICE] == pytest.approx(
+        density * dt**2 / 2 * np.eye(3), abs=1e-15,
+    )
+    assert noise[V_R_SLICE, V_R_SLICE] == pytest.approx(
+        density * dt * np.eye(3), abs=1e-15,
+    )
+    H = _numerical_jacobian(lambda x: _project_state(observer, x), observer.x)
+    assert noise[IMAGE_SLICE] == pytest.approx(H @ noise, abs=1e-10)
+    assert np.linalg.norm(noise[IMAGE_SLICE, V_R_SLICE]) > 0.0
+    assert noise == pytest.approx(noise.T, abs=1e-15)
+    assert np.linalg.eigvalsh(noise)[0] >= -1e-12
+
+
+def test_maneuver_covariance_is_independent_of_imu_step_partition():
+    results = []
+    for steps in (1, 5):
+        covariances = []
+        for density in (0.0, 0.8):
+            observer = PaperStateObserver(noise=ObserverNoise(
+                target_accel_noise_density_m2_s3=density,
+            ))
+            observer.initialize_from_image(
+                (1.0, 0.0, 0.0, 0.0), (0.1, -0.05), 12.0,
+            )
+            for _ in range(steps):
+                observer.predict(
+                    (0.0, 0.0, 0.0), (0.0, 0.0, GRAVITY), 0.02 / steps,
+                )
+            _assert_geometric_state(observer)
+            covariances.append(observer.P)
+        results.append(covariances[1] - covariances[0])
+    assert results[0] == pytest.approx(results[1], abs=1e-12)
+
+
+@pytest.mark.parametrize('density', (-0.1, math.nan, math.inf))
+def test_maneuver_noise_requires_finite_nonnegative_density(density):
+    with pytest.raises(ValueError, match='target_accel_noise_density'):
+        PaperStateObserver(noise=ObserverNoise(
+            target_accel_noise_density_m2_s3=density,
+        ))
