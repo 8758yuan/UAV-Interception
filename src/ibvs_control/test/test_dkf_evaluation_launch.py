@@ -84,7 +84,7 @@ def test_trial_exit_saves_report_without_manual_recorder(monkeypatch, tmp_path):
     directory = tmp_path / 'dkf' / 'automatic_exit'
     assert (directory / 'states.csv').exists()
     assert (directory / '测试结果.html').exists()
-    assert (directory / '每0.5秒对比.xlsx').exists()
+    assert (directory / '每0.1秒对比.xlsx').exists()
     # Even without DKF input, normal launch shutdown must finalize all states.
     rows = list(csv.DictReader((directory / 'metrics.csv').open()))
     assert len(rows) == 18

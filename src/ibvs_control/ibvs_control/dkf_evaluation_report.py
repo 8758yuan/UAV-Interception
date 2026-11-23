@@ -30,7 +30,7 @@ GROUPS = (
         ('b_acc_f', '加速度计偏置（前）'), ('b_acc_l', '加速度计偏置（左）'),
         ('b_acc_u', '加速度计偏置（上）'))),
 )
-PERIOD_NS = 500_000_000
+PERIOD_NS = 100_000_000
 
 
 def display(value):
@@ -61,7 +61,7 @@ def read_samples(directory):
     for row in rows:
         elapsed_ns = int(row['state_time_ns']) - origin
         row['_elapsed_ns'] = elapsed_ns
-        # Presentation sampling only: nearest actual output in each half-second bin.
+        # Presentation sampling only: nearest actual output in each 0.1-second bin.
         index = (elapsed_ns + PERIOD_NS // 2) // PERIOD_NS
         if index not in samples or abs(elapsed_ns - index * PERIOD_NS) < abs(
                 samples[index]['_elapsed_ns'] - index * PERIOD_NS):
@@ -90,7 +90,7 @@ STATE_COLUMNS = tuple(
 def snapshot_rows(samples):
     """One physical sample per row, with each state's components in one cell."""
     for index, sample in samples.items():
-        row = [f'{index * 0.5:.3f}',
+        row = [f'{index * PERIOD_NS / 1_000_000_000:.3f}',
                f'{sample["_elapsed_ns"] * 1e-9:.3f}' if sample else '不可用']
         for _, _, _, states in STATE_GROUPS:
             for kind in ('true', 'estimate', 'error'):
@@ -101,7 +101,7 @@ def snapshot_rows(samples):
 
 
 def write_excel(directory, samples, metrics, *, comparison_rows=None,
-                summary_rows=None, filename='每0.5秒对比.xlsx', sheet_name='每0.5秒对比'):
+                summary_rows=None, filename='每0.1秒对比.xlsx', sheet_name='每0.1秒对比'):
     """Write the two-sheet XLSX using the standard Open XML ZIP format."""
     ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 
@@ -152,7 +152,7 @@ def write_excel(directory, samples, metrics, *, comparison_rows=None,
         merges.append(f'{column(3 + i * 3)}1:{column(5 + i * 3)}1')
     comparisons = [top, second]
     for (index, sample), row in zip(samples.items(), snapshot_rows(samples)):
-        comparisons.append([index * 0.5,
+        comparisons.append([index * PERIOD_NS / 1_000_000_000,
                             sample['_elapsed_ns'] * 1e-9 if sample else '不可用', *row[2:]])
     summary = [
         ['DKF 误差汇总（全频率统计；速度真值为差分近似，偏置真值不可用）'],
@@ -236,7 +236,7 @@ def snapshot_table(rows):
                          for value, (attrs, hidden) in zip(row[2:], columns))
         body.append('<tr>' + cells + '</tr>')
     return ('<div class="table-wrap wide" id="snapshot-table" tabindex="0" '
-            'aria-label="每0.5秒全部状态对比，可横向滚动"><table><thead>' + head
+            'aria-label="每0.1秒全部状态对比，可横向滚动"><table><thead>' + head
             + '</thead><tbody>' + ''.join(body) + '</tbody></table></div>')
 
 
@@ -325,7 +325,7 @@ def generate_report(directory):
             f'<section class="comparison" data-group="{key}"{hidden}>'
             f'<h3>{title}：真实值与估计值</h3>{comparison_chart(rows, states, unit)}</section>'
         )
-    duration = max(samples, default=0) * 0.5
+    duration = max(samples, default=0) * PERIOD_NS / 1_000_000_000
     comparison_count = int(metrics['p_r_e']['count'])
     options = ''.join(f'<option value="{key}">{title}</option>' for key, title, _, _ in GROUPS)
     empty = '<p class="notice">本次没有可评价的相对位置真值，请检查原始记录中的真值或对时状态。</p>' if not comparison_count else ''
@@ -368,9 +368,9 @@ svg{width:100%;height:auto}a{color:#176c90}[hidden]{display:none}
     page += f'<h1>DKF 测试结果</h1><p>本次测试：{escape(directory.name)}</p>'
     page += f'<p>记录时长 <b>{duration:.2f} 秒</b> · 相对位置有效比较 <b>{comparison_count} 次</b></p>{empty}'
     page += '<p>平均相差、最大相差越小，表示估计越接近真值。位置和速度按“无人机 − 目标”定义。</p>'
-    page += '<p><a href="#snapshots">直接查看每 0.5 秒对比表 ↓</a></p>'
+    page += '<p><a href="#snapshots">直接查看每 0.1 秒对比表 ↓</a></p>'
     page += '<h2>1. 误差汇总</h2>' + ''.join(summary)
-    page += '<h2 id="snapshots">2. 每隔 0.5 秒的数据对比</h2>'
+    page += '<h2 id="snapshots">2. 每隔 0.1 秒的数据对比</h2>'
     page += '<p>每行仍包含同一时刻的全部 18 个状态，勾选只改变显示。默认看位置和速度；'
     page += '需要快速比较时，可切换“只看误差”。时间列和表头固定，向右滚动可查看其余列。</p>'
     page += '<p>每组变量合并为括号内的一列，数值保留三位小数。分量顺序：四元数 (w, x, y, z)，'
@@ -390,12 +390,12 @@ svg{width:100%;height:auto}a{color:#176c90}[hidden]{display:none}
     else:
         page += '<p>旧记录未提供拦截起止信号，时间从首个已对时样本开始，最后一行保留最后一个样本。</p>'
     page += '<p>绿色实线是真实值，橙色虚线是 DKF 估计值；两条线越重合越好。'
-    page += '中间每 0.5 秒选取最近的原始记录；首尾使用区间内最近的实际样本，同时列出实际取样时间，不插值、不补造缺失数据。缺失区间显示“不可用”。</p>'
+    page += '中间每 0.1 秒选取最近的原始记录；首尾使用区间内最近的实际样本，同时列出实际取样时间，不插值、不补造缺失数据。缺失区间显示“不可用”。</p>'
     page += ''.join(sections)
     page += '<h2>数据说明</h2><p>相对速度真值由仿真位姿差分得到，是近似值。六个 IMU 偏置没有可靠真值，只显示估计值，无法评价精度。'
-    page += '误差 = 估计值 − 真实值。汇总和曲线使用完整记录，0.5 秒表格仅用于方便阅读。</p>'
+    page += '误差 = 估计值 − 真实值。汇总和曲线使用完整记录，0.1 秒表格仅用于方便阅读。</p>'
     page += '<p>'
-    page += '<a href="每0.5秒对比.xlsx">下载 Excel 对比表</a> · <a href="states.csv">原始数据</a></p>'
+    page += '<a href="每0.1秒对比.xlsx">下载 Excel 对比表</a> · <a href="states.csv">原始数据</a></p>'
     page += '''</main><script>
 document.getElementById('group').addEventListener('change', function(){
   document.querySelectorAll('.comparison').forEach(section => {

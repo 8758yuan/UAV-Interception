@@ -1,4 +1,4 @@
-"""Launch independent A/B/C/D trials and reuse the DKF half-second reports."""
+"""Launch independent A/B/C/D trials and reuse the DKF 0.1-second reports."""
 
 import math
 import os

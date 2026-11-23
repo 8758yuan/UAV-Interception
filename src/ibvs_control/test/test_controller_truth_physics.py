@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 import pytest
 
 
-def _run_physics_check(pattern, with_probe):
+def _run_physics_check(pattern, with_probe, direction, start_on_interception):
     """Compare the exported snapshot with independent native component reads."""
     os.environ['GZ_PARTITION'] = f'ibvs-physics-test-{os.getpid()}'
     from ament_index_python.packages import get_package_prefix
@@ -30,6 +30,8 @@ def _run_physics_check(pattern, with_probe):
 
     from ibvs_sim.paper_moving_target import PaperTargetTrajectory
 
+    origin = (30., 0., 12.) if pattern == 'line' else (35., 0., 14.)
+    speed = 2.0 if pattern == 'line' else 4.0
     root = ET.Element('sdf', version='1.9')
     world = ET.SubElement(root, 'world', name='native_check')
     ET.SubElement(world, 'gravity').text = '0 0 0'
@@ -58,14 +60,22 @@ def _run_physics_check(pattern, with_probe):
             action.execute(context)
     context.launch_configurations.update({
         'moving_target': 'false' if pattern == 'static' else 'true',
-        'target_pattern': pattern, 'target_speed_m_s': '4.0',
+        'target_pattern': pattern, 'target_speed_m_s': str(speed),
+        'target_start_on_interception': str(start_on_interception).lower(),
+        'target_direction_x': str(direction[0]),
+        'target_direction_y': str(direction[1]),
+        'target_direction_z': str(direction[2]),
     })
+    if pattern == 'line':
+        context.launch_configurations.update({
+            'figure8_radius_x_m': '0.0', 'figure8_radius_y_m': '0.0',
+        })
     spawn, = module.spawn_target(context)
     command = (perform_substitutions(context, normalize_to_list_of_substitutions(part))
                for part in spawn.cmd)
     next(argument for argument in command if argument == '-string')
     target = ET.fromstring(next(command)).find('model')
-    ET.SubElement(target, 'pose').text = '35 0 14 0.2 0.1 0.7'
+    ET.SubElement(target, 'pose').text = ' '.join(map(str, origin)) + ' 0.2 0.1 0.7'
     world.append(target)
     topic = '/world/native_check/controller_test/state'
     if with_probe:
@@ -130,6 +140,35 @@ def _run_physics_check(pattern, with_probe):
         fixture.finalize()
         # Allow Gazebo transport discovery before running faster than real time.
         time.sleep(0.2)
+        motion_start_s = 0.0
+        if start_on_interception:
+            import rclpy
+            from ibvs_sim.target_motion_start import TargetMotionStart
+            from interception_interfaces.msg import ControlDebug
+
+            os.environ['ROS_DOMAIN_ID'] = '172'
+            rclpy.init(args=['--ros-args', '-p', 'world:=native_check'])
+            starter = TargetMotionStart()
+            publisher_node = rclpy.create_node('test_interception_state')
+            publisher = publisher_node.create_publisher(
+                ControlDebug, '/interception/control/debug', 10)
+            deadline = time.monotonic() + 3.0
+            while publisher.get_subscription_count() == 0 and time.monotonic() < deadline:
+                rclpy.spin_once(starter, timeout_sec=0.02)
+            assert publisher.get_subscription_count() > 0
+            publisher.publish(ControlDebug(control_state='PRESTREAM'))
+            rclpy.spin_once(starter, timeout_sec=0.1)
+            assert not starter.started
+            assert fixture.server().run(True, 250, False)
+            motion_start_s = max(expected) * 1e-9
+            publisher.publish(ControlDebug(control_state='ACTIVE'))
+            deadline = time.monotonic() + 3.0
+            while not starter.started and time.monotonic() < deadline:
+                rclpy.spin_once(starter, timeout_sec=0.02)
+            assert starter.started
+            starter.destroy_node()
+            publisher_node.destroy_node()
+            rclpy.shutdown()
         assert fixture.server().run(True, 4000, False)
         deadline = time.monotonic() + 3.0
         while with_probe and (not received or max(received) < max(expected)) and time.monotonic() < deadline:
@@ -138,7 +177,8 @@ def _run_physics_check(pattern, with_probe):
         if with_probe:
             assert len(received) > 10 and max(received) == max(expected)
         trajectory = PaperTargetTrajectory('circle' if pattern == 'static' else pattern,
-                                           (35., 0., 14.), 4., 6., 6., tilt_deg=45.)
+                                           origin, speed, 6., 6., tilt_deg=45.,
+                                           direction=direction)
         for stamp, message in received.items():
             fields = message.param[0].params
             native = expected[stamp]
@@ -160,15 +200,16 @@ def _run_physics_check(pattern, with_probe):
             angular = fields['vehicle_angular_velocity'].vector3d_value
             np.testing.assert_array_equal([angular.x, angular.y, angular.z],
                                           native['vehicle_angular'])
-        previous_position = np.array([35., 0., 14.])
+        previous_position = np.array(origin)
         previous_stamp = 0
         for stamp, native in expected.items():
             elapsed = stamp * 1e-9
-            if pattern == 'static':
-                target_position, target_velocity = np.array([35., 0., 14.]), np.zeros(3)
+            if pattern == 'static' or elapsed <= motion_start_s:
+                target_position, target_velocity = np.array(origin), np.zeros(3)
             else:
-                target_position = np.array(trajectory.sample(elapsed).position)
-                previous = np.array(trajectory.sample(max(elapsed - 0.004, 0.)).position)
+                motion_elapsed = elapsed - motion_start_s
+                target_position = np.array(trajectory.sample(motion_elapsed).position)
+                previous = np.array(trajectory.sample(max(motion_elapsed - 0.004, 0.)).position)
                 target_velocity = (target_position - previous) / 0.004
             np.testing.assert_allclose(native['target_position'], target_position,
                                        atol=1e-7, rtol=0)
@@ -195,14 +236,24 @@ def _run_physics_check(pattern, with_probe):
         node.unsubscribe(topic)
 
 
-@pytest.mark.parametrize('pattern', ('static', 'circle', 'figure8'))
+@pytest.mark.parametrize('pattern, direction, start_on_interception', (
+    ('static', (0.0, 1.0, 0.0), False),
+    ('circle', (0.0, 1.0, 0.0), False),
+    ('figure8', (0.0, 1.0, 0.0), False),
+    ('line', (0.0, 1.0, 0.0), False),
+    ('line', (-2.0, -3.0, 1.0), False),
+    ('line', (0.0, 1.0, 0.0), True),
+))
 @pytest.mark.parametrize('with_probe', (False, True))
-def test_same_step_native_snapshot_and_physical_target_motion(pattern, with_probe):
+def test_same_step_native_snapshot_and_physical_target_motion(
+        pattern, direction, start_on_interception, with_probe):
     result = subprocess.run([sys.executable, '-s', str(Path(__file__).resolve()),
-                             pattern, str(int(with_probe))],
+                             pattern, str(int(with_probe)), str(int(start_on_interception)),
+                             *map(str, direction)],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
 if __name__ == '__main__':
-    _run_physics_check(sys.argv[1], bool(int(sys.argv[2])))
+    _run_physics_check(sys.argv[1], bool(int(sys.argv[2])),
+                       tuple(map(float, sys.argv[4:])), bool(int(sys.argv[3])))

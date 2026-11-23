@@ -6,7 +6,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -32,6 +32,10 @@ def generate_launch_description() -> LaunchDescription:
             'moving_target': 'true',
             'target_pattern': pattern,
             'target_speed_m_s': target_speed,
+            'target_start_on_interception': LaunchConfiguration('target_start_on_interception'),
+            'target_direction_x': LaunchConfiguration('target_direction_x'),
+            'target_direction_y': LaunchConfiguration('target_direction_y'),
+            'target_direction_z': LaunchConfiguration('target_direction_z'),
             'figure8_radius_x_m': radius_x,
             'figure8_radius_y_m': radius_y,
             'target_tilt_deg': LaunchConfiguration('target_tilt_deg'),
@@ -50,6 +54,15 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('target_pattern', default_value='circle'),
         DeclareLaunchArgument('target_tilt_deg', default_value='45.0'),
         DeclareLaunchArgument('target_speed_m_s', default_value='5.0'),
+        DeclareLaunchArgument(
+            'target_start_on_interception',
+            default_value=PythonExpression([
+                "'true' if '", pattern, "' == 'line' else 'false'",
+            ]),
+        ),
+        DeclareLaunchArgument('target_direction_x', default_value='0.0'),
+        DeclareLaunchArgument('target_direction_y', default_value='1.0'),
+        DeclareLaunchArgument('target_direction_z', default_value='0.0'),
         DeclareLaunchArgument('figure8_radius_x_m', default_value='6.0'),
         DeclareLaunchArgument('figure8_radius_y_m', default_value='6.0'),
         DeclareLaunchArgument('device', default_value=''),

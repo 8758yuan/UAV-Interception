@@ -1,4 +1,4 @@
-"""Readable reports must preserve measured values and 0.5 s sampling semantics."""
+"""Readable reports must preserve measured values and 0.1 s sampling semantics."""
 
 import csv
 from pathlib import Path
@@ -37,23 +37,24 @@ def write_fixture(directory):
                             else [name, 0, 'nan', 'nan', 'nan'])
 
 
-def test_half_second_selects_real_samples_and_retains_missing_values(tmp_path):
+def test_tenth_second_selects_real_samples_and_retains_missing_values(tmp_path):
     directory = tmp_path / 'recording'
     write_fixture(directory)
     rows, samples, origin = read_samples(directory)
     assert origin == 10_000_000_000
     assert len(rows) == 5
-    assert samples[1]['_elapsed_ns'] == 490_000_000
-    assert samples[3] is None
+    assert samples[5]['_elapsed_ns'] == 490_000_000
+    assert samples[15] is None
     output = list(snapshot_rows(samples))
-    assert output[1][:2] == ['0.500', '0.490']
+    assert [row[0] for row in output] == [f'{index / 10:.3f}' for index in range(21)]
+    assert output[5][:2] == ['0.500', '0.490']
     position_index = 2 + 3 * [key for key, _, _, _ in STATE_GROUPS].index('position')
-    assert output[1][position_index:position_index + 3] == [
+    assert output[5][position_index:position_index + 3] == [
         '(1.000, 1.000, 1.000)', '(1.250, 1.250, 1.250)', '(0.250, 0.250, 0.250)']
-    assert output[1][2] == '(1.000, 1.000, 1.000, 1.000)'
-    assert output[1][11] == '(1.000, 1.000)'
-    assert len(output[1]) == 2 + 6 * 3
-    assert output[3][-3:] == ['不可用'] * 3
+    assert output[5][2] == '(1.000, 1.000, 1.000, 1.000)'
+    assert output[5][11] == '(1.000, 1.000)'
+    assert len(output[5]) == 2 + 6 * 3
+    assert output[15][-3:] == ['不可用'] * 3
     assert output[0][-3:] == ['不可用', '(0.250, 0.250, 0.250)', '不可用']
 
 
@@ -77,7 +78,7 @@ def test_report_is_self_contained_and_leaves_raw_recording_unchanged(tmp_path):
     script = Path(__file__).parents[1] / 'ibvs_control' / 'dkf_evaluation_report.py'
     subprocess.run([sys.executable, '-s', str(script), str(directory)], check=True)
     page = (directory / '测试结果.html').read_text()
-    assert '每隔 0.5 秒的数据对比' in page
+    assert '每隔 0.1 秒的数据对比' in page
     assert '<svg' in page
     assert '平均相差' in page
     assert '不可用' in page
@@ -87,22 +88,23 @@ def test_report_is_self_contained_and_leaves_raw_recording_unchanged(tmp_path):
     from zipfile import ZipFile
     from xml.etree import ElementTree as ET
 
-    assert not (directory / '每0.5秒对比.csv').exists()
-    assert 'href="每0.5秒对比.xlsx"' in page
+    assert not (directory / '每0.1秒对比.csv').exists()
+    assert 'href="每0.1秒对比.xlsx"' in page
     ns = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
-    with ZipFile(directory / '每0.5秒对比.xlsx') as archive:
+    with ZipFile(directory / '每0.1秒对比.xlsx') as archive:
         assert archive.testzip() is None
         for name in archive.namelist():
             ET.fromstring(archive.read(name))
         sheet = ET.fromstring(archive.read('xl/worksheets/sheet1.xml'))
         summary = ET.fromstring(archive.read('xl/worksheets/sheet2.xml'))
     data_rows = sheet.findall('s:sheetData/s:row', ns)[2:]
-    assert len(data_rows) == 5
+    assert len(data_rows) == 21
     assert all(len(row) == 2 + 6 * 3 for row in data_rows)
     cells = {cell.attrib['r']: cell for row in data_rows for cell in row}
-    assert cells['A4'].find('s:v', ns).text == '0.5'
-    assert abs(float(cells['B4'].find('s:v', ns).text) - .49) < 1e-12
-    assert cells['F4'].find('s:is/s:t', ns).text == '(1.000, 1.000, 1.000)'
+    assert cells['A4'].find('s:v', ns).text == '0.1'
+    assert cells['A8'].find('s:v', ns).text == '0.5'
+    assert abs(float(cells['B8'].find('s:v', ns).text) - .49) < 1e-12
+    assert cells['F8'].find('s:is/s:t', ns).text == '(1.000, 1.000, 1.000)'
     assert cells['T3'].find('s:is/s:t', ns).text == '不可用'
     assert cells['S3'].find('s:is/s:t', ns).text == '(0.250, 0.250, 0.250)'
     # HTML and Excel present exactly the same grouped values.
@@ -110,7 +112,7 @@ def test_report_is_self_contained_and_leaves_raw_recording_unchanged(tmp_path):
         for cell in list(row)[2:]:
             assert cell.find('s:is/s:t', ns).text in page
     assert all(cell.find('s:is/s:t', ns).text == '不可用'
-               for cell in list(data_rows[3])[2:])
+               for cell in list(data_rows[15])[2:])
     pane = sheet.find('s:sheetViews/s:sheetView/s:pane', ns)
     assert pane.attrib['topLeftCell'] == 'C3'
     assert pane.attrib['xSplit'] == pane.attrib['ySplit'] == '2'
@@ -202,4 +204,5 @@ def test_event_boundaries_are_present_even_between_dkf_samples(tmp_path):
     assert snapshots[0][:2] == ['0.000', '0.100']
     assert snapshots[-1][:2] == ['2.330', '2.100']
     assert snapshots[-1][2:] == list(snapshot_rows({0: rows[-1]}))[0][2:]
-    assert [row[0] for row in snapshots] == ['0.000', '0.500', '1.000', '1.500', '2.000', '2.330']
+    assert [row[0] for row in snapshots] == [
+        f'{index / 10:.3f}' for index in range(24)] + ['2.330']

@@ -7,7 +7,7 @@ vision_interception_coordinator:
     paper_k1: 0.4
 
     # 恒定接近速度分量(m/s)，必须为正；这是参考速度参数，不是速度上限。
-    v_c: 3.0
+    v_c: 2.5
 
     # 相对速度误差反馈-K_v*z2
     velocity_gain: [1.6, 1.6, 1.6]
@@ -17,7 +17,7 @@ vision_interception_coordinator:
 
     # 视觉加速度距离权重L(m)：原视觉项乘以(1+r_c/L)，r_c为相机到目标距离。
     # L越小增强越强；10m仅为初始配置，不保证10m内视觉项占主导。
-    visual_l_m: 5.0
+    visual_l_m: 8.0
 
     # 论文式(12)的Barrier边界k_b，本项目用角度配置：
     # k_b=1-cos(safe_los_angle_deg)。数值减小可让控制器更早抑制目标偏移。
@@ -58,7 +58,7 @@ paper_state_observer:
     # 独立于IMU的各向同性目标机动噪声谱密度(m^2/s^3)，0表示不计此项。
     # 8/9为本次录包离线对照的候选值：2*sigma_a^2*tau，
     # sigma_a=(2^2/6)/sqrt(3) m/s^2、tau=6/2 s；尚未经新闭环验证。
-    target_accel_noise_density_m2_s3: 0.8888888888888888
+    target_accel_noise_density_m2_s3: 400.0
 
     # 图像测量噪声R的标准差形式；增大后更少相信视觉测量。
     image_noise_std: 0.015

@@ -37,6 +37,7 @@ setup(
         'console_scripts': [
             'target_contact_indicator = '
             'ibvs_sim.target_contact_indicator:main',
+            'target_motion_start = ibvs_sim.target_motion_start:main',
         ],
     },
 )

@@ -202,7 +202,7 @@ def test_launch_reuses_observer_and_private_recording_window(test_case, tmp_path
 
 
 @pytest.mark.parametrize('test_case', ['C', 'D'])
-def test_private_window_still_produces_existing_half_second_table(tmp_path, test_case):
+def test_private_window_produces_tenth_second_table(tmp_path, test_case):
     rclpy.init(args=[
         '--ros-args', '-p', f'output_directory:={tmp_path}', '-p', f'test_case:={test_case}',
         '-p', 'run_id:=standalone', '-p', 'px4_to_gazebo_offset_s:=0.0',
@@ -236,8 +236,9 @@ def test_private_window_still_produces_existing_half_second_table(tmp_path, test
     rows = list(csv.DictReader((directory / 'states.csv').open()))
     assert len(rows) == 3
     _, samples, _ = read_samples(directory)
-    assert [row[0] for row in snapshot_rows(samples)] == ['0.000', '0.500', '1.000']
-    assert (directory / '每0.5秒对比.xlsx').exists()
+    assert [row[0] for row in snapshot_rows(samples)] == [
+        f'{index / 10:.3f}' for index in range(11)]
+    assert (directory / '每0.1秒对比.xlsx').exists()
     report = (directory / '测试结果.html').read_text()
     assert f'DKF 独立初测工况：{test_case}' in report
     assert '时间从独立测试开始计为 0 秒' in report

@@ -37,25 +37,45 @@ class PaperTargetSystem : public gz::sim::System,
     this->vehicleName = _sdf->Get<std::string>("vehicle_model");
     this->pattern = _sdf->Get<std::string>("target_pattern");
     this->speed = _sdf->Get<double>("target_speed_m_s");
-    this->radiusX = _sdf->Get<double>("radius_x_m");
-    this->radiusY = _sdf->Get<double>("radius_y_m");
-    this->tilt = _sdf->Get<double>("target_tilt_deg") * std::acos(-1.0) / 180.0;
-    if ((this->pattern != "circle" && this->pattern != "figure8") ||
-        !std::isfinite(this->speed) || this->speed <= 0.0 ||
-        !std::isfinite(this->radiusX) || this->radiusX <= 0.0 ||
-        !std::isfinite(this->radiusY) || this->radiusY <= 0.0 ||
-        !std::isfinite(this->tilt))
+    this->startOnInterception = _sdf->Get<bool>("start_on_interception");
+    this->started = !this->startOnInterception;
+    if ((this->pattern != "circle" && this->pattern != "figure8" &&
+         this->pattern != "line") ||
+        !std::isfinite(this->speed) || this->speed <= 0.0)
       throw std::invalid_argument("Invalid paper target trajectory");
-    // Same arc-length parameterization as PaperTargetTrajectory.
-    this->arc.push_back(0.0);
-    auto previous = this->Curve(0.0);
-    for (int i = 1; i <= kSamples; ++i)
+    if (this->pattern == "line")
     {
-      const auto point = this->Curve(i * this->ThetaStep());
-      this->arc.push_back(this->arc.back() + (point - previous).Length());
-      previous = point;
+      const gz::math::Vector3d direction(
+        _sdf->Get<double>("target_direction_x"),
+        _sdf->Get<double>("target_direction_y"),
+        _sdf->Get<double>("target_direction_z"));
+      const double norm = std::hypot(direction.X(), direction.Y(), direction.Z());
+      if (!std::isfinite(norm) || norm == 0.0)
+        throw std::invalid_argument("Target direction must be finite and nonzero");
+      this->lineVelocity = direction / norm * this->speed;
+    }
+    else
+    {
+      this->radiusX = _sdf->Get<double>("radius_x_m");
+      this->radiusY = _sdf->Get<double>("radius_y_m");
+      this->tilt = _sdf->Get<double>("target_tilt_deg") * std::acos(-1.0) / 180.0;
+      if (!std::isfinite(this->radiusX) || this->radiusX <= 0.0 ||
+          !std::isfinite(this->radiusY) || this->radiusY <= 0.0 ||
+          !std::isfinite(this->tilt))
+        throw std::invalid_argument("Invalid paper target trajectory");
+      // Same arc-length parameterization as PaperTargetTrajectory.
+      this->arc.push_back(0.0);
+      auto previous = this->Curve(0.0);
+      for (int i = 1; i <= kSamples; ++i)
+      {
+        const auto point = this->Curve(i * this->ThetaStep());
+        this->arc.push_back(this->arc.back() + (point - previous).Length());
+        previous = point;
+      }
     }
     const auto world = gz::sim::World(gz::sim::worldEntity(_ecm)).Name(_ecm).value();
+    this->node.Advertise("/world/" + world + "/paper_target/start",
+      &PaperTargetSystem::OnStart, this);
     this->node.Advertise("/world/" + world + "/paper_target/stop",
       &PaperTargetSystem::OnStop, this);
     this->node.Subscribe("/world/" + world + "/model/" + this->targetName +
@@ -74,6 +94,11 @@ class PaperTargetSystem : public gz::sim::System,
       _ecm.RemoveComponent<gz::sim::components::LinearVelocityCmd>(this->link.Entity());
       return;
     }
+    if (!this->started)
+    {
+      this->link.SetLinearVelocity(_ecm, gz::math::Vector3d(0, 0, 0));
+      return;
+    }
     const double dt = std::chrono::duration<double>(_info.dt).count();
     if (dt <= 0.0)
       return;
@@ -84,7 +109,8 @@ class PaperTargetSystem : public gz::sim::System,
     }
     const double end = std::chrono::duration<double>(
       _info.simTime - *this->startTime).count();
-    const auto velocity = (this->Sample(end) - this->Sample(end - dt)) / dt;
+    const auto velocity = this->pattern == "line" ? this->lineVelocity :
+      (this->Sample(end) - this->Sample(end - dt)) / dt;
     const auto rotation = this->link.WorldPose(_ecm)->Rot();
     this->link.SetLinearVelocity(_ecm, rotation.RotateVectorReverse(velocity));
   }
@@ -93,6 +119,7 @@ class PaperTargetSystem : public gz::sim::System,
       gz::sim::EntityComponentManager &) override
   {
     this->startTime.reset();
+    this->started = !this->startOnInterception;
     this->stopped = false;
   }
 
@@ -132,6 +159,13 @@ class PaperTargetSystem : public gz::sim::System,
         this->stopped = true;
   }
 
+  private: bool OnStart(const gz::msgs::Empty &, gz::msgs::Boolean &_response)
+  {
+    this->started = true;
+    _response.set_data(true);
+    return true;
+  }
+
   private: bool OnStop(const gz::msgs::Empty &, gz::msgs::Boolean &_response)
   {
     this->stopped = true;
@@ -143,9 +177,10 @@ class PaperTargetSystem : public gz::sim::System,
   private: gz::sim::Link link;
   private: gz::transport::Node node;
   private: std::string vehicleName, targetName, pattern;
-  private: std::atomic<bool> stopped{false};
+  private: bool startOnInterception{false};
+  private: std::atomic<bool> started{false}, stopped{false};
   private: double speed{0}, radiusX{0}, radiusY{0}, tilt{0};
-  private: gz::math::Vector3d origin;
+  private: gz::math::Vector3d origin, lineVelocity;
   private: std::vector<double> arc;
   private: std::optional<std::chrono::steady_clock::duration> startTime;
 };

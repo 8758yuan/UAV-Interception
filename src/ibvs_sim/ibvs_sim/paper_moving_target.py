@@ -17,30 +17,40 @@ class TrajectorySample:
 
 
 class PaperTargetTrajectory:
-    """Constant-arc-speed figure-eight or circular target trajectory."""
+    """Constant-speed straight, figure-eight or circular target trajectory."""
 
     def __init__(
         self,
         pattern: str,
         origin: Tuple[float, float, float],
         speed_m_s: float,
-        radius_x_m: float,
-        radius_y_m: float,
+        radius_x_m: float = 6.0,
+        radius_y_m: float = 6.0,
         samples: int = 8192,
         tilt_deg: float = 0.0,
+        direction: Tuple[float, float, float] = (0.0, 1.0, 0.0),
     ) -> None:
-        if pattern not in ('figure8', 'circle'):
-            raise ValueError("pattern must be 'figure8' or 'circle'")
-        values = (*origin, speed_m_s, radius_x_m, radius_y_m, tilt_deg)
-        if not all(math.isfinite(value) for value in values):
+        if pattern not in ('figure8', 'circle', 'line'):
+            raise ValueError("pattern must be 'figure8', 'circle' or 'line'")
+        if not all(math.isfinite(value) for value in (*origin, speed_m_s)):
             raise ValueError('trajectory parameters must be finite')
-        if speed_m_s <= 0.0 or radius_x_m <= 0.0 or radius_y_m <= 0.0:
-            raise ValueError('speed and radii must be positive')
-        if samples < 128:
-            raise ValueError('trajectory samples must be at least 128')
+        if speed_m_s <= 0.0:
+            raise ValueError('speed must be positive')
         self.pattern = pattern
         self.origin = tuple(float(value) for value in origin)
         self.speed_m_s = float(speed_m_s)
+        if pattern == 'line':
+            norm = math.hypot(*direction)
+            if len(direction) != 3 or not math.isfinite(norm) or norm == 0.0:
+                raise ValueError('direction must contain three finite values and be nonzero')
+            self._line_velocity = tuple(self.speed_m_s * (value / norm) for value in direction)
+            return
+        if not all(math.isfinite(value) for value in (radius_x_m, radius_y_m, tilt_deg)):
+            raise ValueError('trajectory parameters must be finite')
+        if radius_x_m <= 0.0 or radius_y_m <= 0.0:
+            raise ValueError('speed and radii must be positive')
+        if samples < 128:
+            raise ValueError('trajectory samples must be at least 128')
         self.radius_x_m = float(radius_x_m)
         self.radius_y_m = float(radius_y_m)
         self._tilt_rad = math.radians(tilt_deg)
@@ -53,6 +63,13 @@ class PaperTargetTrajectory:
         """Return a sample whose spatial speed equals the configured speed."""
         if not math.isfinite(elapsed_s) or elapsed_s < 0.0:
             raise ValueError('elapsed_s must be finite and nonnegative')
+        if self.pattern == 'line':
+            return TrajectorySample(
+                position=tuple(origin + velocity * elapsed_s
+                               for origin, velocity in zip(self.origin, self._line_velocity)),
+                velocity=self._line_velocity,
+                yaw_rad=math.atan2(self._line_velocity[1], self._line_velocity[0]),
+            )
         distance = math.fmod(
             self.speed_m_s * elapsed_s,
             self.path_length_m,

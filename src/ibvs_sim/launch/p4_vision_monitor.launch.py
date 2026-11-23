@@ -6,8 +6,9 @@ import xml.etree.ElementTree as ET
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler
+from launch.conditions import IfCondition
 from launch.event_handlers import OnShutdown
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -29,6 +30,10 @@ def spawn_target(context):
             'vehicle_model': value('vehicle_model_name'),
             'target_pattern': value('target_pattern'),
             'target_speed_m_s': value('target_speed_m_s'),
+            'start_on_interception': value('target_start_on_interception'),
+            'target_direction_x': value('target_direction_x'),
+            'target_direction_y': value('target_direction_y'),
+            'target_direction_z': value('target_direction_z'),
             'radius_x_m': value('figure8_radius_x_m'),
             'radius_y_m': value('figure8_radius_y_m'),
             'target_tilt_deg': value('target_tilt_deg'),
@@ -98,6 +103,11 @@ def generate_launch_description() -> LaunchDescription:
         name='target_contact_indicator',
         output='screen',
     )
+    motion_start = Node(
+        package='ibvs_sim', executable='target_motion_start', name='target_motion_start',
+        parameters=[{'world': world}], output='screen',
+        condition=IfCondition(LaunchConfiguration('target_start_on_interception')),
+    )
     camera_bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -144,6 +154,16 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument('moving_target', default_value='false'),
             DeclareLaunchArgument('target_pattern', default_value='circle'),
             DeclareLaunchArgument('target_speed_m_s', default_value='5.0'),
+            DeclareLaunchArgument(
+                'target_start_on_interception',
+                default_value=PythonExpression([
+                    "'true' if '", LaunchConfiguration('target_pattern'),
+                    "' == 'line' else 'false'",
+                ]),
+            ),
+            DeclareLaunchArgument('target_direction_x', default_value='0.0'),
+            DeclareLaunchArgument('target_direction_y', default_value='1.0'),
+            DeclareLaunchArgument('target_direction_z', default_value='0.0'),
             DeclareLaunchArgument('figure8_radius_x_m', default_value='6.0'),
             DeclareLaunchArgument('figure8_radius_y_m', default_value='6.0'),
             DeclareLaunchArgument('target_tilt_deg', default_value='45.0'),
@@ -176,6 +196,7 @@ def generate_launch_description() -> LaunchDescription:
             OpaqueFunction(function=spawn_target),
             RegisterEventHandler(OnShutdown(on_shutdown=[OpaqueFunction(function=stop_target)])),
             contact_indicator,
+            motion_start,
             camera_bridge,
             detector,
         ]
